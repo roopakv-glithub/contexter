@@ -7,12 +7,46 @@ class ProjectAnalyzer {
 
   final SupabaseClient _client;
 
+  Future<FunctionResponse> _invoke(
+    String function, {
+    required Map<String, dynamic> body,
+  }) async {
+    try {
+      return await _client.functions.invoke(function, body: body);
+    } on FunctionException catch (error) {
+      if (error.status == 404) {
+        throw AiServiceException(
+          'The Supabase "$function" function is not deployed (404). '
+          'Deploy it from the project folder with: '
+          'supabase functions deploy $function',
+        );
+      }
+      if (error.status == 401 || error.status == 403) {
+        throw AiServiceException(
+          'Supabase rejected the "$function" request (${error.status}). '
+          'Check the project URL and public key.',
+        );
+      }
+      if (error.status == 0) {
+        throw AiServiceException(
+          'Could not reach the Supabase AI service. Check your internet '
+          'connection and try again.',
+        );
+      }
+      final details = error.details;
+      final message = details is Map && details['error'] is String
+          ? details['error'] as String
+          : 'Supabase AI request failed (${error.status}).';
+      throw AiServiceException(message);
+    }
+  }
+
   Future<String> enhancePrompt({
     required String prompt,
     required String projectName,
     required String context,
   }) async {
-    final response = await _client.functions.invoke(
+    final response = await _invoke(
       'enhance-prompt',
       body: {'prompt': prompt, 'projectName': projectName, 'context': context},
     );
@@ -26,7 +60,7 @@ class ProjectAnalyzer {
   }
 
   Future<Map<String, dynamic>> analyzeRepository(String repositoryUrl) async {
-    final response = await _client.functions.invoke(
+    final response = await _invoke(
       'analyze-project',
       body: {'repositoryUrl': repositoryUrl},
     );
@@ -42,7 +76,7 @@ class ProjectAnalyzer {
         .split(RegExp(r'[\\/]'))
         .where((part) => part.isNotEmpty)
         .toList();
-    final response = await _client.functions.invoke(
+    final response = await _invoke(
       'analyze-project',
       body: {
         'projectName': pathParts.isEmpty ? 'Local project' : pathParts.last,
@@ -65,4 +99,13 @@ class ProjectAnalyzer {
       'The analysis service returned an invalid report.',
     );
   }
+}
+
+class AiServiceException implements Exception {
+  const AiServiceException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }

@@ -19,6 +19,8 @@ void main() {
     await tester.tap(find.text('Setup Project'));
     await tester.pumpAndSettle();
     expect(find.text('Set up your project'), findsOneWidget);
+    expect(find.text('Browse…'), findsOneWidget);
+    expect(find.text('Analyze and summarize'), findsOneWidget);
 
     await tester.tap(find.text('Continue'));
     await tester.pumpAndSettle();

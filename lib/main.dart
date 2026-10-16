@@ -83,16 +83,18 @@ class _MoscowtShellState extends State<MoscowtShell> {
   List<Map<String, dynamic>> savedPrompts = [];
   bool analysisBusy = false;
   bool reportsBusy = false;
+  bool setupAnalysisBusy = false;
   String? analysisError;
+  String? setupAnalysisError;
+  String? _analyzedSetupFolder;
+  String? _analyzedSetupRepository;
+  Map<String, dynamic>? _setupFolderReport;
+  Map<String, dynamic>? _setupRepositoryReport;
   int scannedFiles = 0;
   String projectSource = '';
   final projectController = TextEditingController(text: 'moscowt-api');
-  final folderController = TextEditingController(
-    text: r'C:\Users\you\Projects\moscowt-api',
-  );
-  final repoController = TextEditingController(
-    text: 'https://github.com/your-org/moscowt-api',
-  );
+  final folderController = TextEditingController();
+  final repoController = TextEditingController();
   final descriptionController = TextEditingController();
   final agentController = TextEditingController(text: 'API Helper');
   final purposeController = TextEditingController(
@@ -125,6 +127,211 @@ class _MoscowtShellState extends State<MoscowtShell> {
   }
 
   ProjectAnalyzer get _analyzer => ProjectAnalyzer(Supabase.instance.client);
+
+  bool get _setupSourcesReady {
+    final folder = folderController.text.trim();
+    final repository = repoController.text.trim();
+    if (folder.isEmpty && repository.isEmpty) return true;
+    return (folder.isEmpty || folder == _analyzedSetupFolder) &&
+        (repository.isEmpty || repository == _analyzedSetupRepository);
+  }
+
+  Future<void> _browseSetupFolder() async {
+    try {
+      final folder = await RepositoryScanner.pickFolder();
+      if (folder == null || !mounted) return;
+      setState(() {
+        folderController.text = folder;
+        final parts = folder.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty);
+        if (parts.isNotEmpty) projectController.text = parts.last;
+        _analyzedSetupFolder = null;
+        _setupFolderReport = null;
+        setupAnalysisError = null;
+      });
+    } catch (error) {
+      if (mounted) notice('Could not open the project folder picker: $error');
+    }
+  }
+
+  Future<void> _analyzeSetupSources() async {
+    final folder = folderController.text.trim();
+    final repository = repoController.text.trim();
+    if (folder.isEmpty && repository.isEmpty) {
+      notice('Choose a project folder or enter a public GitHub URL first.');
+      return;
+    }
+
+    setState(() {
+      setupAnalysisBusy = true;
+      setupAnalysisError = null;
+      if (folder != _analyzedSetupFolder) {
+        _analyzedSetupFolder = null;
+        _setupFolderReport = null;
+      }
+      if (repository != _analyzedSetupRepository) {
+        _analyzedSetupRepository = null;
+        _setupRepositoryReport = null;
+      }
+    });
+    final failures = <String>[];
+
+    if (folder.isNotEmpty && _analyzedSetupFolder != folder) {
+      try {
+        final report = await _analyzer.analyzeFolder(
+          folder,
+          onProgress: (count) {
+            if (mounted) setState(() => scannedFiles = count);
+          },
+        );
+        if (mounted) {
+          setState(() {
+            _setupFolderReport = report;
+            _analyzedSetupFolder = folder;
+          });
+        }
+      } catch (error) {
+        failures.add('Folder analysis failed: $error');
+      }
+    }
+
+    if (repository.isNotEmpty && _analyzedSetupRepository != repository) {
+      try {
+        final report = await _analyzer.analyzeRepository(repository);
+        if (mounted) {
+          setState(() {
+            _setupRepositoryReport = report;
+            _analyzedSetupRepository = repository;
+          });
+        }
+      } catch (error) {
+        failures.add('GitHub analysis failed: $error');
+      }
+    }
+
+    final reports = <Map<String, dynamic>>[];
+    String? historySaveError;
+    if (_setupFolderReport case final folderReport?) {
+      reports.add(folderReport);
+    }
+    if (_setupRepositoryReport case final repositoryReport?) {
+      reports.add(repositoryReport);
+    }
+    if (mounted && reports.isNotEmpty) {
+      final combined = _combineSetupReports(reports);
+      setState(() {
+        analysisReport = combined;
+        project = combined['projectName'] as String? ?? project;
+        projectController.text = project;
+      });
+      try {
+        final saved = await _localHistory.saveReport(
+          projectName: project,
+          source: [
+            if (folder.isNotEmpty) 'Local folder',
+            if (repository.isNotEmpty) repository,
+          ].join(' + '),
+          report: combined,
+        );
+        if (mounted) {
+          setState(
+            () => savedReports = [saved, ...savedReports].take(20).toList(),
+          );
+        }
+      } catch (error) {
+        historySaveError = '$error';
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        setupAnalysisBusy = false;
+        scannedFiles = 0;
+        setupAnalysisError = failures.isEmpty ? null : failures.join('\n');
+        if (failures.isEmpty && _setupSourcesReady) setupStep = 1;
+      });
+      if (failures.isEmpty) {
+        notice(
+          historySaveError == null
+              ? 'Project summary is ready. Set up your agent next.'
+              : 'Project summary is ready, but local history could not be saved: $historySaveError',
+        );
+      }
+    }
+  }
+
+  Map<String, dynamic> _combineSetupReports(
+    List<Map<String, dynamic>> reports,
+  ) {
+    if (reports.length == 1) return reports.single;
+    List<Map<String, dynamic>> items(Map<String, dynamic> report, String key) {
+      final value = report[key];
+      return value is List
+          ? value.whereType<Map>().map(Map<String, dynamic>.from).toList()
+          : [];
+    }
+
+    final folderReport = _setupFolderReport;
+    final repositoryReport = _setupRepositoryReport;
+    final combinedFiles = [
+      if (folderReport != null)
+        for (final file in items(folderReport, 'files'))
+          {...file, 'path': 'Local folder/${file['path']}'},
+      if (repositoryReport != null)
+        for (final file in items(repositoryReport, 'files'))
+          {...file, 'path': 'GitHub/${file['path']}'},
+    ];
+    final combinedStats = <String, int>{};
+    for (final report in reports) {
+      final stats = report['statistics'];
+      if (stats is Map) {
+        for (final key in [
+          'discoveredFiles',
+          'analyzedFiles',
+          'omittedFiles',
+          'truncatedFiles',
+        ]) {
+          final value = stats[key];
+          if (value is num) {
+            combinedStats[key] = (combinedStats[key] ?? 0) + value.toInt();
+          }
+        }
+      }
+    }
+    final projectName = projectController.text.trim().isNotEmpty
+        ? projectController.text.trim()
+        : reports.first['projectName'] as String? ?? 'Project';
+
+    return {
+      'projectName': projectName,
+      'overview': [
+        if (folderReport != null)
+          'Local folder: ${folderReport['overview'] ?? ''}',
+        if (repositoryReport != null)
+          'GitHub repository: ${repositoryReport['overview'] ?? ''}',
+      ].join('\n\n'),
+      'architecture': [
+        if (folderReport != null)
+          'Local folder: ${folderReport['architecture'] ?? ''}',
+        if (repositoryReport != null)
+          'GitHub repository: ${repositoryReport['architecture'] ?? ''}',
+      ].join('\n\n'),
+      'technologies': [
+        ...reports.expand((report) => items(report, 'technologies')),
+      ],
+      'dependencies': [
+        ...reports.expand((report) => items(report, 'dependencies')),
+      ],
+      'recommendations': [
+        ...reports.expand(
+          (report) => report['recommendations'] is List
+              ? (report['recommendations'] as List).whereType<String>()
+              : const <String>[],
+        ),
+      ],
+      'files': combinedFiles,
+      'statistics': combinedStats,
+    };
+  }
 
   Future<void> analyzeRepository() async {
     final url = repositoryAnalysisController.text.trim();
@@ -491,7 +698,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'Recent prompt activity',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
@@ -555,26 +762,28 @@ class _MoscowtShellState extends State<MoscowtShell> {
           ),
           const Spacer(),
           FilledButton(
-            onPressed: () {
-              if (setupStep < 2) {
-                setState(() {
-                  setupStep++;
-                  if (setupStep == 1) {
-                    project = projectController.text.trim().isEmpty
-                        ? 'New project'
-                        : projectController.text.trim();
-                  }
-                });
-              } else {
-                setState(() {
-                  project = projectController.text.trim().isEmpty
-                      ? 'New project'
-                      : projectController.text.trim();
-                });
-                go(Page.home);
-                notice('Your project and agent are ready.');
-              }
-            },
+            onPressed: setupAnalysisBusy || !_setupSourcesReady
+                ? null
+                : () {
+                    if (setupStep < 2) {
+                      setState(() {
+                        setupStep++;
+                        if (setupStep == 1) {
+                          project = projectController.text.trim().isEmpty
+                              ? 'New project'
+                              : projectController.text.trim();
+                        }
+                      });
+                    } else {
+                      setState(() {
+                        project = projectController.text.trim().isEmpty
+                            ? 'New project'
+                            : projectController.text.trim();
+                      });
+                      go(Page.home);
+                      notice('Your project and agent are ready.');
+                    }
+                  },
             child: Text(setupStep == 2 ? 'Create Agent' : 'Continue'),
           ),
         ],
@@ -608,21 +817,81 @@ class _MoscowtShellState extends State<MoscowtShell> {
         _Field(
           label: 'Project Folder',
           controller: folderController,
+          onChanged: (value) => setState(() {
+            if (value.trim() != _analyzedSetupFolder) {
+              _analyzedSetupFolder = null;
+              _setupFolderReport = null;
+            }
+            setupAnalysisError = null;
+          }),
           trailing: TextButton(
-            onPressed: () =>
-                notice('Choose a project folder from the Windows app.'),
-            child: const Text('Browse Folder'),
+            onPressed: setupAnalysisBusy ? null : _browseSetupFolder,
+            child: const Text('Browse…'),
           ),
+        ),
+        const SizedBox(height: 6),
+        _SetupSourceStatus(
+          label: 'Folder summary',
+          ready:
+              folderController.text.trim().isNotEmpty &&
+              folderController.text.trim() == _analyzedSetupFolder,
         ),
         const SizedBox(height: 16),
         _Field(
           label: 'GitHub Repository (optional)',
           controller: repoController,
           hint: 'https://github.com/owner/repository',
+          onChanged: (value) => setState(() {
+            if (value.trim() != _analyzedSetupRepository) {
+              _analyzedSetupRepository = null;
+              _setupRepositoryReport = null;
+            }
+            setupAnalysisError = null;
+          }),
         ),
+        const SizedBox(height: 6),
+        _SetupSourceStatus(
+          label: 'GitHub summary',
+          ready:
+              repoController.text.trim().isNotEmpty &&
+              repoController.text.trim() == _analyzedSetupRepository,
+        ),
+        const SizedBox(height: 14),
+        FilledButton.icon(
+          onPressed: setupAnalysisBusy ? null : _analyzeSetupSources,
+          icon: setupAnalysisBusy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.summarize_outlined),
+          label: Text(
+            setupAnalysisBusy ? 'Analyzing project…' : 'Analyze and summarize',
+          ),
+        ),
+        if (setupAnalysisBusy) ...[
+          const SizedBox(height: 10),
+          const LinearProgressIndicator(),
+          if (scannedFiles > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                '$scannedFiles project files scanned',
+                style: const TextStyle(color: muted, fontSize: 11),
+              ),
+            ),
+        ],
+        if (setupAnalysisError != null) ...[
+          const SizedBox(height: 10),
+          SelectableText(
+            setupAnalysisError!,
+            style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+          ),
+        ],
         const SizedBox(height: 8),
         const Text(
-          'Connect a repository to give your agent relevant project context.',
+          'Summarize each selected source before continuing. If you add both, both summaries must be ready.',
           style: TextStyle(color: muted, fontSize: 11),
         ),
       ],
@@ -1473,8 +1742,10 @@ class _MoscowtShellState extends State<MoscowtShell> {
                       ],
                     ),
                     const SizedBox(height: 6),
-                    const Text(
-                      'Moscowt’s local C++ engine structures your prompt. Connect an AI provider in Settings for model-powered results.',
+                    Text(
+                      analysisReport == null
+                          ? 'Analyze your project first to get prompts grounded in its real files and modules.'
+                          : 'The project summary above is included so the enhanced prompt can target relevant existing files and modules.',
                       style: TextStyle(color: muted, fontSize: 11),
                     ),
                   ],
@@ -1682,11 +1953,13 @@ class _Field extends StatelessWidget {
     required this.controller,
     this.hint,
     this.trailing,
+    this.onChanged,
   });
   final String label;
   final TextEditingController controller;
   final String? hint;
   final Widget? trailing;
+  final ValueChanged<String>? onChanged;
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1697,6 +1970,7 @@ class _Field extends StatelessWidget {
           Expanded(
             child: TextField(
               controller: controller,
+              onChanged: onChanged,
               decoration: InputDecoration(
                 hintText: hint,
                 filled: true,
@@ -1718,6 +1992,33 @@ class _Field extends StatelessWidget {
           ),
           if (trailing != null) ...[const SizedBox(width: 10), trailing!],
         ],
+      ),
+    ],
+  );
+}
+
+class _SetupSourceStatus extends StatelessWidget {
+  const _SetupSourceStatus({required this.label, required this.ready});
+
+  final String label;
+  final bool ready;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Icon(
+        ready ? Icons.check_circle : Icons.radio_button_unchecked,
+        size: 16,
+        color: ready ? const Color(0xFF1EAF61) : muted,
+      ),
+      const SizedBox(width: 6),
+      Text(
+        ready ? '$label ready' : label,
+        style: TextStyle(
+          color: ready ? const Color(0xFF1EAF61) : muted,
+          fontSize: 11,
+          fontWeight: ready ? FontWeight.w600 : FontWeight.normal,
+        ),
       ),
     ],
   );

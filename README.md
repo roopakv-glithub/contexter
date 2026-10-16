@@ -46,6 +46,10 @@ deploying; never paste the key into source code or command history. Apply the
 database migrations before deploying the functions. The AI functions use a
 five-request-per-minute limit per client IP and require the standard
 `SUPABASE_SERVICE_ROLE_KEY` function secret for the server-side limiter.
+The desktop app cannot deploy its own backend: deployment requires privileged
+Supabase credentials that must not be embedded in a distributable application.
+If the app reports that an AI function is missing, run the deployment commands
+above from this repository with the Supabase CLI authenticated.
 
 Only the public Supabase client key is used by the desktop app; never put a
 Supabase `service_role` key in the app, repository, or GitHub Actions. Rotate
