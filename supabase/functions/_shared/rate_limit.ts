@@ -1,19 +1,31 @@
 export async function consumeAiRequest(request: Request): Promise<boolean> {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const authorization = request.headers.get("Authorization");
-  if (!supabaseUrl || !anonKey || !authorization) {
-    throw new Error("Authenticated Supabase function environment is not configured.");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error("Supabase function environment is not configured.");
   }
+
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const clientAddress = request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-real-ip") ??
+    forwardedFor?.split(",").at(-1)?.trim() ??
+    "unknown";
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(clientAddress),
+  );
+  const clientHash = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
 
   const response = await fetch(`${supabaseUrl}/rest/v1/rpc/consume_ai_request`, {
     method: "POST",
     headers: {
-      apikey: anonKey,
-      Authorization: authorization,
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
       "Content-Type": "application/json",
     },
-    body: "{}",
+    body: JSON.stringify({ p_client_hash: clientHash }),
   });
   if (!response.ok) {
     await response.body?.cancel();

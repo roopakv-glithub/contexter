@@ -25,11 +25,10 @@ The app output is in `build\windows\x64\runner\Release`.
 
 ## Supabase and NVIDIA setup
 
-The app signs users in with Supabase Auth. Enable email/password sign-up and
-configure email confirmation in the Supabase dashboard. After confirming an
-account, return to the Windows app and sign in. Authenticated Edge Functions
-call NVIDIA; the NVIDIA key is stored only as a Supabase function secret, never
-in the Windows app or repository.
+The app opens directly without sign-in. Project reports and enhanced prompt
+history are stored locally on the device. Supabase Edge Functions call NVIDIA;
+the NVIDIA key is stored only as a Supabase function secret, never in the
+Windows app or repository.
 
 In the Supabase dashboard, add `NVIDIA_API_KEY` under **Edge Function
 Secrets**. Then, with the Supabase CLI installed and authenticated:
@@ -43,14 +42,14 @@ supabase functions deploy enhance-prompt
 ```
 
 Set `NVIDIA_API_KEY` to a newly rotated provider key in the dashboard before
-deploying; never paste the key into source code or command history.
+deploying; never paste the key into source code or command history. Apply the
+database migrations before deploying the functions. The AI functions use a
+five-request-per-minute limit per client IP and require the standard
+`SUPABASE_SERVICE_ROLE_KEY` function secret for the server-side limiter.
 
-The migration creates per-user `analysis_reports` and `prompt_history` tables
-with row-level security. Only the public Supabase client key is used by the
-desktop app; never put a Supabase `service_role` key in the app, repository, or
-GitHub Actions. Rotate any provider or service-role keys that have been posted
-or otherwise exposed. The Edge Functions use a five-request-per-minute,
-per-account AI limit.
+Only the public Supabase client key is used by the desktop app; never put a
+Supabase `service_role` key in the app, repository, or GitHub Actions. Rotate
+any provider or service-role keys that have been posted or otherwise exposed.
 
 Public GitHub URLs and locally selected folders are supported. Private GitHub
 repositories require a secure GitHub integration and are not fetched using a
@@ -64,7 +63,7 @@ shows files that were skipped or truncated.
 
 The interface and application flow are written in Flutter/Dart. The Windows
 runner includes a native C++ prompt formatter; AI-powered enhancement and
-repository analysis use authenticated Supabase Edge Functions instead.
+repository analysis use Supabase Edge Functions.
 
 ## GitHub Actions
 

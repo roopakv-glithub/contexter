@@ -25,29 +25,6 @@ class ProjectAnalyzer {
     );
   }
 
-  Future<void> savePrompt({
-    required String original,
-    required String enhanced,
-    required String projectName,
-  }) async {
-    await _client.from('prompt_history').insert({
-      'project_name': projectName,
-      'original_prompt': original,
-      'enhanced_prompt': enhanced,
-    });
-  }
-
-  Future<List<Map<String, dynamic>>> recentPrompts() async {
-    final rows = await _client
-        .from('prompt_history')
-        .select(
-          'id, project_name, original_prompt, enhanced_prompt, created_at',
-        )
-        .order('created_at', ascending: false)
-        .limit(100);
-    return List<Map<String, dynamic>>.from(rows);
-  }
-
   Future<Map<String, dynamic>> analyzeRepository(String repositoryUrl) async {
     final response = await _client.functions.invoke(
       'analyze-project',
@@ -76,32 +53,6 @@ class ProjectAnalyzer {
       },
     );
     return _readReport(response.data);
-  }
-
-  Future<String> saveReport({
-    required String projectName,
-    required String source,
-    required Map<String, dynamic> report,
-  }) async {
-    final saved = await _client
-        .from('analysis_reports')
-        .insert({
-          'project_name': projectName,
-          'source': source,
-          'report': report,
-        })
-        .select('id')
-        .single();
-    return saved['id'] as String;
-  }
-
-  Future<List<Map<String, dynamic>>> recentReports() async {
-    final rows = await _client
-        .from('analysis_reports')
-        .select('id, project_name, source, created_at, report')
-        .order('created_at', ascending: false)
-        .limit(20);
-    return List<Map<String, dynamic>>.from(rows);
   }
 
   Map<String, dynamic> _readReport(dynamic data) {

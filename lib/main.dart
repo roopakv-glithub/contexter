@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'config.dart';
-import 'screens/auth_screen.dart';
+import 'services/local_history.dart';
 import 'services/project_analyzer.dart';
 import 'services/repository_scanner.dart';
 
@@ -56,39 +55,8 @@ class MoscowtApp extends StatelessWidget {
         bodySmall: TextStyle(color: muted, fontSize: 11),
       ),
     ),
-    home: const _AuthGate(),
+    home: const MoscowtShell(),
   );
-}
-
-class _AuthGate extends StatefulWidget {
-  const _AuthGate();
-
-  @override
-  State<_AuthGate> createState() => _AuthGateState();
-}
-
-class _AuthGateState extends State<_AuthGate> {
-  final _client = Supabase.instance.client;
-  late Session? _session = _client.auth.currentSession;
-  late final StreamSubscription<AuthState> _subscription;
-
-  @override
-  void initState() {
-    super.initState();
-    _subscription = _client.auth.onAuthStateChange.listen((state) {
-      if (mounted) setState(() => _session = state.session);
-    });
-  }
-
-  @override
-  void dispose() {
-    _subscription.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) =>
-      _session == null ? const AuthScreen() : const MoscowtShell();
 }
 
 enum Page { home, setup, agents, history, models, settings, enhance }
@@ -135,6 +103,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
   );
   final searchController = TextEditingController();
   final repositoryAnalysisController = TextEditingController();
+  final _localHistory = LocalHistory();
 
   @override
   void dispose() {
@@ -205,14 +174,16 @@ class _MoscowtShellState extends State<MoscowtShell> {
         projectController.text = project;
       });
       try {
-        await _analyzer.saveReport(
+        final saved = await _localHistory.saveReport(
           projectName: project,
           source: source.startsWith('https://') ? source : 'Local folder',
           report: report,
         );
         if (mounted) {
-          setState(() => savedReports = []);
-          notice('Analysis complete and saved to your account.');
+          setState(
+            () => savedReports = [saved, ...savedReports].take(20).toList(),
+          );
+          notice('Analysis complete. Report saved on this device.');
         }
       } catch (error) {
         if (mounted) {
@@ -232,8 +203,8 @@ class _MoscowtShellState extends State<MoscowtShell> {
     setState(() => reportsBusy = true);
     try {
       final results = await Future.wait([
-        _analyzer.recentReports(),
-        _analyzer.recentPrompts(),
+        _localHistory.recentReports(),
+        _localHistory.recentPrompts(),
       ]);
       if (mounted) {
         setState(() {
@@ -303,14 +274,21 @@ class _MoscowtShellState extends State<MoscowtShell> {
         enhanced = result;
       });
       try {
-        await _analyzer.savePrompt(
+        final saved = await _localHistory.savePrompt(
           original: input,
           enhanced: result,
           projectName: project,
         );
+        if (mounted) {
+          setState(
+            () => savedPrompts = [saved, ...savedPrompts].take(100).toList(),
+          );
+        }
       } catch (error) {
         if (mounted) {
-          notice('Prompt enhanced, but saving it to history failed: $error');
+          notice(
+            'Prompt enhanced, but saving it on this device failed: $error',
+          );
         }
       }
     } catch (error) {
@@ -1248,7 +1226,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
                   ),
                   const SizedBox(height: 14),
                   const Text(
-                    'Moscowt uses NVIDIA z-ai/glm-5.3 through authenticated Supabase Edge Functions. The NVIDIA API key stays server-side and is never stored in this Windows app.',
+                    'Moscowt uses NVIDIA z-ai/glm-5.3 through Supabase Edge Functions. No account is required, and the NVIDIA API key stays server-side.',
                     style: TextStyle(color: muted),
                   ),
                 ],
@@ -1260,25 +1238,13 @@ class _MoscowtShellState extends State<MoscowtShell> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'Supabase account',
+                    'Privacy',
                     style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 8),
-                  Text(
-                    Supabase.instance.client.auth.currentUser?.email ?? '',
-                    style: const TextStyle(color: muted),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      try {
-                        await Supabase.instance.client.auth.signOut();
-                      } catch (error) {
-                        if (mounted) notice('Could not sign out: $error');
-                      }
-                    },
-                    icon: const Icon(Icons.logout),
-                    label: const Text('Sign out'),
+                  const Text(
+                    'Project reports and enhanced prompts are saved locally on this device. Source files are sent to the AI service only when you start an analysis.',
+                    style: TextStyle(color: muted),
                   ),
                 ],
               ),
