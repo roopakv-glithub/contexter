@@ -1,0 +1,35 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Upload Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: moscowt-windows
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
