@@ -36,4 +36,7 @@ respective integrations. Never commit access tokens or API keys.
 
 `.github/workflows/windows.yml` runs Flutter analysis and widget tests, builds
 the Windows release, and uploads the release folder as a downloadable artifact
-for pushes, pull requests, and manual workflow runs.
+for pushes, pull requests, and manual workflow runs. Push a version tag such as
+`v1.0.0` to create a GitHub Release containing `moscowt.exe` and a ZIP with the
+complete Windows application bundle. Run the released app from the extracted
+ZIP so its Flutter runtime and data files are alongside the executable.
