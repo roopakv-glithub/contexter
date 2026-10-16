@@ -10,7 +10,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(const MoscowtApp());
+    await tester.pumpWidget(const MaterialApp(home: MoscowtShell()));
     expect(
       find.text('Welcome back — here’s what your companion can do.'),
       findsOneWidget,

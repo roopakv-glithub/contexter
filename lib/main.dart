@@ -1,13 +1,25 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() => runApp(const MoscowtApp());
+import 'config.dart';
+import 'screens/auth_screen.dart';
+import 'services/project_analyzer.dart';
+import 'services/repository_scanner.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
+  runApp(const MoscowtApp());
+}
 
 const blue = Color(0xFF0878F9);
 const ink = Color(0xFF20232A);
 const muted = Color(0xFF858A95);
 const canvas = Color(0xFFF4F5F8);
-const native = MethodChannel('moscowt/native');
 
 class MoscowtApp extends StatelessWidget {
   const MoscowtApp({super.key});
@@ -44,8 +56,39 @@ class MoscowtApp extends StatelessWidget {
         bodySmall: TextStyle(color: muted, fontSize: 11),
       ),
     ),
-    home: const MoscowtShell(),
+    home: const _AuthGate(),
   );
+}
+
+class _AuthGate extends StatefulWidget {
+  const _AuthGate();
+
+  @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  final _client = Supabase.instance.client;
+  late Session? _session = _client.auth.currentSession;
+  late final StreamSubscription<AuthState> _subscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscription = _client.auth.onAuthStateChange.listen((state) {
+      if (mounted) setState(() => _session = state.session);
+    });
+  }
+
+  @override
+  void dispose() {
+    _subscription.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _session == null ? const AuthScreen() : const MoscowtShell();
 }
 
 enum Page { home, setup, agents, history, models, settings, enhance }
@@ -67,6 +110,14 @@ class _MoscowtShellState extends State<MoscowtShell> {
   String prompt =
       'Add rate limiting to the login endpoint so people can’t brute force it, use whatever we already have';
   String enhanced = '';
+  Map<String, dynamic>? analysisReport;
+  List<Map<String, dynamic>> savedReports = [];
+  List<Map<String, dynamic>> savedPrompts = [];
+  bool analysisBusy = false;
+  bool reportsBusy = false;
+  String? analysisError;
+  int scannedFiles = 0;
+  String projectSource = '';
   final projectController = TextEditingController(text: 'moscowt-api');
   final folderController = TextEditingController(
     text: r'C:\Users\you\Projects\moscowt-api',
@@ -83,6 +134,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
     text: 'Add rate limiting to the login endpoint so people can’t brute force it, use whatever we already have',
   );
   final searchController = TextEditingController();
+  final repositoryAnalysisController = TextEditingController();
 
   @override
   void dispose() {
@@ -94,10 +146,121 @@ class _MoscowtShellState extends State<MoscowtShell> {
     purposeController.dispose();
     promptController.dispose();
     searchController.dispose();
+    repositoryAnalysisController.dispose();
     super.dispose();
   }
 
-  void go(Page next) => setState(() => page = next);
+  void go(Page next) {
+    setState(() => page = next);
+    if (next == Page.history) _loadSavedHistory();
+  }
+
+  ProjectAnalyzer get _analyzer => ProjectAnalyzer(Supabase.instance.client);
+
+  Future<void> analyzeRepository() async {
+    final url = repositoryAnalysisController.text.trim();
+    if (url.isEmpty) {
+      notice('Enter a public GitHub repository URL.');
+      return;
+    }
+    await _runAnalysis(() => _analyzer.analyzeRepository(url), source: url);
+  }
+
+  Future<void> analyzeLocalFolder() async {
+    try {
+      final folder = await RepositoryScanner.pickFolder();
+      if (folder == null) return;
+      projectSource = folder;
+      await _runAnalysis(
+        () => _analyzer.analyzeFolder(
+          folder,
+          onProgress: (count) {
+            if (mounted) setState(() => scannedFiles = count);
+          },
+        ),
+        source: 'Local folder',
+      );
+    } catch (error) {
+      if (mounted) notice('Could not scan the selected folder: $error');
+    }
+  }
+
+  Future<void> _runAnalysis(
+    Future<Map<String, dynamic>> Function() analyze, {
+    required String source,
+  }) async {
+    setState(() {
+      analysisBusy = true;
+      analysisError = null;
+      analysisReport = null;
+      scannedFiles = 0;
+      projectSource = source;
+    });
+    try {
+      final report = await analyze();
+      if (!mounted) return;
+      setState(() {
+        analysisReport = report;
+        project = report['projectName'] as String? ?? project;
+        projectController.text = project;
+      });
+      try {
+        await _analyzer.saveReport(
+          projectName: project,
+          source: source.startsWith('https://') ? source : 'Local folder',
+          report: report,
+        );
+        if (mounted) {
+          setState(() => savedReports = []);
+          notice('Analysis complete and saved to your account.');
+        }
+      } catch (error) {
+        if (mounted) {
+          notice('Analysis is ready, but saving the report failed: $error');
+        }
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => analysisError = '$error');
+      notice('Project analysis failed: $error');
+    } finally {
+      if (mounted) setState(() => analysisBusy = false);
+    }
+  }
+
+  Future<void> _loadSavedHistory() async {
+    setState(() => reportsBusy = true);
+    try {
+      final results = await Future.wait([
+        _analyzer.recentReports(),
+        _analyzer.recentPrompts(),
+      ]);
+      if (mounted) {
+        setState(() {
+          savedReports = results[0];
+          savedPrompts = results[1];
+        });
+      }
+    } catch (error) {
+      if (mounted) notice('Could not load saved analyses: $error');
+    } finally {
+      if (mounted) setState(() => reportsBusy = false);
+    }
+  }
+
+  void _openSavedReport(Map<String, dynamic> saved) {
+    final report = saved['report'];
+    if (report is! Map) {
+      notice('This saved report has an invalid format.');
+      return;
+    }
+    setState(() {
+      analysisReport = Map<String, dynamic>.from(report);
+      project = saved['project_name'] as String? ?? 'Project';
+      projectSource = saved['source'] as String? ?? '';
+    });
+    go(Page.models);
+  }
 
   Future<void> enhancePrompt() async {
     final input = promptController.text.trim();
@@ -107,17 +270,51 @@ class _MoscowtShellState extends State<MoscowtShell> {
     }
     setState(() => busy = true);
     try {
-      final result = await native.invokeMethod<String>('enhancePrompt', {
-        'prompt': input,
-      });
+      final context = analysisReport == null
+          ? ''
+          : jsonEncode({
+              'overview': analysisReport!['overview'],
+              'architecture': analysisReport!['architecture'],
+              'technologies': analysisReport!['technologies'],
+              'dependencies': analysisReport!['dependencies'],
+              'files': (analysisReport!['files'] as List? ?? const [])
+                  .take(40)
+                  .map(
+                    (item) => {
+                      'path': item['path'],
+                      'purpose': item['purpose'],
+                      'functions': item['functions'],
+                    },
+                  )
+                  .toList(),
+            });
+      final result = await _analyzer.enhancePrompt(
+        prompt: input,
+        projectName: project,
+        context: context,
+      );
+      if (result.isEmpty) {
+        throw const FormatException(
+          'The AI returned an empty enhanced prompt.',
+        );
+      }
       setState(() {
         prompt = input;
-        enhanced = result ?? '';
+        enhanced = result;
       });
-    } on PlatformException catch (error) {
-      notice('Prompt enhancement failed: ${error.message ?? error.code}');
-    } on MissingPluginException {
-      notice('The native prompt engine is available in the Windows build.');
+      try {
+        await _analyzer.savePrompt(
+          original: input,
+          enhanced: result,
+          projectName: project,
+        );
+      } catch (error) {
+        if (mounted) {
+          notice('Prompt enhanced, but saving it to history failed: $error');
+        }
+      }
+    } catch (error) {
+      notice('Prompt enhancement failed: $error');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -762,6 +959,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
           Expanded(
             child: TextField(
               controller: searchController,
+              onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.search),
                 hintText: 'Search prompts',
@@ -790,27 +988,73 @@ class _MoscowtShellState extends State<MoscowtShell> {
       Expanded(
         child: ListView(
           children: [
-            _HistoryCard(
-              original: prompt,
-              improved: enhanced.isEmpty
-                  ? 'Task: ${prompt.trim()}\\n\\nConstraints: Reuse existing patterns. Keep the current response shape.'
-                  : enhanced,
-              saving: '−412 tokens',
-              onReopen: () {
-                promptController.text = prompt;
-                go(Page.enhance);
-              },
-            ),
-            const _HistoryCard(
-              original: 'Refactor token service to use refresh tokens',
-              improved: 'Task: Refactor src/services/token.ts to issue refresh tokens.\\nContext: JWT signing in utils/jwt.ts. Acceptance: existing tests pass.',
-              saving: '−268 tokens',
-            ),
-            const _HistoryCard(
-              original: 'Write tests for the billing webhook',
-              improved: 'Task: Add tests for POST /billing/webhook.\\nExpected: cover success, retries, and invalid signatures.',
-              saving: '−530 tokens',
-            ),
+            if (reportsBusy)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(24),
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            else if (savedPrompts.isEmpty && savedReports.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  'Your saved prompt enhancements and project analyses will appear here.',
+                  style: TextStyle(color: muted),
+                ),
+              ),
+            if (savedPrompts.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Text(
+                  'Prompt enhancements',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+              ),
+              for (final item in savedPrompts.where((item) {
+                final query = searchController.text.toLowerCase().trim();
+                return query.isEmpty ||
+                    (item['original_prompt'] as String? ?? '')
+                        .toLowerCase()
+                        .contains(query) ||
+                    (item['project_name'] as String? ?? '')
+                        .toLowerCase()
+                        .contains(query);
+              }))
+                _SavedPromptCard(
+                  item: item,
+                  onReopen: () {
+                    promptController.text =
+                        item['original_prompt'] as String? ?? '';
+                    prompt = promptController.text;
+                    enhanced = item['enhanced_prompt'] as String? ?? '';
+                    go(Page.enhance);
+                  },
+                ),
+            ],
+            if (savedReports.isNotEmpty) ...[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 10),
+                child: Text(
+                  'Project analyses',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+              ),
+              for (final item in savedReports.where((item) {
+                final query = searchController.text.toLowerCase().trim();
+                return query.isEmpty ||
+                    (item['project_name'] as String? ?? '')
+                        .toLowerCase()
+                        .contains(query) ||
+                    (item['source'] as String? ?? '').toLowerCase().contains(
+                      query,
+                    );
+              }))
+                _SavedReportCard(
+                  item: item,
+                  onOpen: () => _openSavedReport(item),
+                ),
+            ],
           ],
         ),
       ),
@@ -820,22 +1064,114 @@ class _MoscowtShellState extends State<MoscowtShell> {
   Widget _repository() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Row(
-        children: [
-          const Expanded(
-            child: _Heading(
-              'Repository Context',
-              'Indexed project files help your prompts stay grounded.',
-            ),
-          ),
-          FilledButton(
-            onPressed: () => notice('Repository indexing queued.'),
-            child: const Text('Reindex Project'),
-          ),
-        ],
+      const _Heading(
+        'Project Analyzer',
+        'Analyze a GitHub repository or a local project folder with NVIDIA AI.',
       ),
       const SizedBox(height: 18),
-      Expanded(child: _agents()),
+      _Card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Analyze a public GitHub repository',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: repositoryAnalysisController,
+                    keyboardType: TextInputType.url,
+                    onSubmitted: (_) =>
+                        analysisBusy ? null : analyzeRepository(),
+                    decoration: const InputDecoration(
+                      hintText: 'https://github.com/owner/repository',
+                      prefixIcon: Icon(Icons.link),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton.icon(
+                  onPressed: analysisBusy ? null : analyzeRepository,
+                  icon: const Icon(Icons.travel_explore),
+                  label: const Text('Analyze URL'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: analysisBusy ? null : analyzeLocalFolder,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('Choose local folder'),
+                ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Text(
+                    'Private repositories require a secure GitHub connection. Secrets and generated files are excluded.',
+                    style: TextStyle(color: muted, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      if (analysisBusy)
+        _Card(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                projectSource.startsWith('https://')
+                    ? 'Fetching repository and analyzing its files…'
+                    : 'Scanning project files…',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 10),
+              const LinearProgressIndicator(),
+              if (scannedFiles > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    '$scannedFiles project files scanned',
+                    style: const TextStyle(color: muted, fontSize: 11),
+                  ),
+                ),
+              const SizedBox(height: 6),
+              const Text(
+                'The AI reviews source modules and dependencies in batches.',
+                style: TextStyle(color: muted, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+      if (analysisError != null && !analysisBusy)
+        _Card(
+          child: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent),
+              const SizedBox(width: 10),
+              Expanded(child: SelectableText(analysisError!)),
+            ],
+          ),
+        ),
+      if (analysisReport != null)
+        Expanded(child: _AnalysisReportView(report: analysisReport!))
+      else if (!analysisBusy)
+        const Expanded(
+          child: Center(
+            child: Text(
+              'Choose a GitHub URL or a local folder to generate a complete project report.',
+              style: TextStyle(color: muted),
+            ),
+          ),
+        ),
     ],
   );
 
@@ -911,27 +1247,38 @@ class _MoscowtShellState extends State<MoscowtShell> {
                     style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 14),
-                  _DropdownField(
-                    label: 'Provider',
-                    value: 'Anthropic',
-                    values: const ['Anthropic', 'OpenAI', 'Google'],
-                    onChanged: (_) {},
-                  ),
-                  const SizedBox(height: 12),
-                  _DropdownField(
-                    label: 'Model',
-                    value: 'Claude Sonnet 5.5',
-                    values: const [
-                      'Claude Sonnet 5.5',
-                      'GPT-4.1',
-                      'Gemini 2.5 Pro',
-                    ],
-                    onChanged: (_) {},
-                  ),
-                  const SizedBox(height: 12),
                   const Text(
-                    'API keys are never shown after saving. Configure your provider key to enable AI-powered enhancements.',
+                    'Moscowt uses NVIDIA z-ai/glm-5.3 through authenticated Supabase Edge Functions. The NVIDIA API key stays server-side and is never stored in this Windows app.',
                     style: TextStyle(color: muted),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+            _Card(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Supabase account',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    Supabase.instance.client.auth.currentUser?.email ?? '',
+                    style: const TextStyle(color: muted),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await Supabase.instance.client.auth.signOut();
+                      } catch (error) {
+                        if (mounted) notice('Could not sign out: $error');
+                      }
+                    },
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Sign out'),
                   ),
                 ],
               ),
@@ -989,7 +1336,8 @@ class _MoscowtShellState extends State<MoscowtShell> {
                               maxLines: null,
                               expands: true,
                               textAlignVertical: TextAlignVertical.top,
-                              onChanged: (value) => prompt = value,
+                              onChanged: (value) =>
+                                  setState(() => prompt = value),
                               decoration: const InputDecoration(
                                 hintText: 'Describe what you want to do…',
                                 border: OutlineInputBorder(),
@@ -1766,94 +2114,446 @@ class _Metric extends StatelessWidget {
   );
 }
 
-class _HistoryCard extends StatelessWidget {
-  const _HistoryCard({
-    required this.original,
-    required this.improved,
-    required this.saving,
-    this.onReopen,
-  });
-  final String original;
-  final String improved;
-  final String saving;
-  final VoidCallback? onReopen;
+class _AnalysisReportView extends StatefulWidget {
+  const _AnalysisReportView({required this.report});
+
+  final Map<String, dynamic> report;
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 12),
-    child: _Card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  State<_AnalysisReportView> createState() => _AnalysisReportViewState();
+}
+
+class _AnalysisReportViewState extends State<_AnalysisReportView> {
+  String query = '';
+
+  List<Map<String, dynamic>> _items(Object? value) {
+    if (value is! List) return const [];
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final report = widget.report;
+    final technologies = _items(report['technologies']);
+    final dependencies = _items(report['dependencies']);
+    final files = _items(report['files']);
+    final normalizedQuery = query.toLowerCase().trim();
+    final visibleFiles = files.where((file) {
+      if (normalizedQuery.isEmpty) return true;
+      return '${file['path']} ${file['module']} ${file['purpose']}'
+          .toLowerCase()
+          .contains(normalizedQuery);
+    }).toList();
+    final statistics = report['statistics'];
+
+    return Column(
+      children: [
+        Expanded(
+          child: ListView(
             children: [
-              Expanded(
+              _Card(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            report['projectName'] as String? ?? 'Project',
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        if (statistics is Map)
+                          Text(
+                            '${statistics['analyzedFiles'] ?? files.length} files analyzed',
+                            style: const TextStyle(color: muted, fontSize: 11),
+                          ),
+                      ],
+                    ),
+                    if (report['repositoryUrl'] is String) ...[
+                      const SizedBox(height: 3),
+                      SelectableText(
+                        report['repositoryUrl'] as String,
+                        style: const TextStyle(color: blue, fontSize: 12),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
                     const Text(
-                      'Original',
-                      style: TextStyle(color: muted, fontSize: 11),
+                      'Project overview',
+                      style: TextStyle(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 5),
-                    Text(original),
+                    SelectableText(
+                      report['overview'] as String? ?? 'No overview provided.',
+                      style: const TextStyle(height: 1.5),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Architecture',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 5),
+                    SelectableText(
+                      report['architecture'] as String? ??
+                          'No architecture details provided.',
+                      style: const TextStyle(height: 1.5),
+                    ),
+                    if (statistics is Map &&
+                        (statistics['omittedFiles'] as num? ?? 0) > 0) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        '${statistics['omittedFiles']} files were not analyzed because of scan limits or unreadable content.',
+                        style: const TextStyle(
+                          color: Colors.deepOrange,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                    if (statistics is Map &&
+                        (statistics['truncatedFiles'] as num? ?? 0) > 0) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        '${statistics['truncatedFiles']} large files were shortened to fit the analysis limits.',
+                        style: const TextStyle(
+                          color: Colors.deepOrange,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-              const SizedBox(width: 22),
-              Expanded(
+              const SizedBox(height: 12),
+              _Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Tech stack (${technologies.length})',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    if (technologies.isEmpty)
+                      const Text(
+                        'No technologies identified.',
+                        style: TextStyle(color: muted),
+                      )
+                    else
+                      for (final item in technologies)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 130,
+                                child: Text(
+                                  item['category'] as String? ?? 'Technology',
+                                  style: const TextStyle(color: muted),
+                                ),
+                              ),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      item['name'] as String? ?? 'Unknown',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (item['evidence'] is String)
+                                      Text(
+                                        item['evidence'] as String,
+                                        style: const TextStyle(
+                                          color: muted,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              _Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Dependencies (${dependencies.length})',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    if (dependencies.isEmpty)
+                      const Text(
+                        'No dependencies identified from the project manifests.',
+                        style: TextStyle(color: muted),
+                      )
+                    else
+                      for (final item in dependencies)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 5),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                flex: 2,
+                                child: Text(
+                                  '${item['name'] ?? 'Unknown'}${item['dev'] == true ? ' · dev' : ''}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  item['version'] as String? ?? '',
+                                  style: const TextStyle(color: muted),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 3,
+                                child: Text(
+                                  item['purpose'] as String? ??
+                                      'Purpose not specified',
+                                  style: const TextStyle(color: muted),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              _Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Files and modules (${files.length})',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 240,
+                          child: TextField(
+                            onChanged: (value) => setState(() => query = value),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              prefixIcon: Icon(Icons.search, size: 18),
+                              hintText: 'Filter files',
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (visibleFiles.isEmpty)
+                      const Text(
+                        'No files match this search.',
+                        style: TextStyle(color: muted),
+                      )
+                    else
+                      for (final file in visibleFiles)
+                        _AnalyzedFile(file: file),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              _Card(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Enhanced',
-                      style: TextStyle(color: blue, fontSize: 11),
+                      'Recommendations',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                    const SizedBox(height: 5),
-                    Text(
-                      improved,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+                    const SizedBox(height: 6),
+                    for (final item
+                        in report['recommendations'] is List
+                            ? report['recommendations'] as List
+                            : const [])
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.lightbulb_outline,
+                              size: 17,
+                              color: blue,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(child: Text('$item')),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
               ),
             ],
           ),
-          const Divider(height: 24),
-          Row(
-            children: [
-              const Icon(
-                Icons.smart_toy_outlined,
-                color: Color(0xFFAA79E9),
-                size: 17,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
+        ),
+      ],
+    );
+  }
+}
+
+class _AnalyzedFile extends StatelessWidget {
+  const _AnalyzedFile({required this.file});
+  final Map<String, dynamic> file;
+
+  @override
+  Widget build(BuildContext context) {
+    final functions = file['functions'] is List
+        ? (file['functions'] as List).whereType<Map>().toList()
+        : const <Map>[];
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(left: 14, right: 8, bottom: 12),
+      title: Text(
+        file['path'] as String? ?? 'Unknown file',
+        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+      ),
+      subtitle: Text(
+        '${file['module'] ?? 'Module'} · ${file['purpose'] ?? 'Purpose not specified'}',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 11, color: muted),
+      ),
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Module: ${file['module'] ?? 'Unknown'}\nPurpose: ${file['purpose'] ?? 'Not specified'}',
+            style: const TextStyle(height: 1.5),
+          ),
+        ),
+        if (functions.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          for (final item in functions)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
                 child: Text(
-                  '$original · Today',
-                  style: const TextStyle(color: muted, fontSize: 11),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  '${item['name'] ?? 'Function'} — ${item['purpose'] ?? 'Purpose not specified'}',
+                  style: const TextStyle(fontSize: 11),
                 ),
               ),
-              _Pill(saving, const Color(0xFFE3F7EB), const Color(0xFF1EAF61)),
-              TextButton(onPressed: onReopen, child: const Text('Reopen')),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+class _SavedPromptCard extends StatelessWidget {
+  const _SavedPromptCard({required this.item, required this.onReopen});
+  final Map<String, dynamic> item;
+  final VoidCallback onReopen;
+
+  @override
+  Widget build(BuildContext context) => _Card(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          item['project_name'] as String? ?? 'Project',
+          style: const TextStyle(color: muted, fontSize: 11),
+        ),
+        const SizedBox(height: 5),
+        Text(item['original_prompt'] as String? ?? ''),
+        const Divider(height: 22),
+        Text(
+          item['enhanced_prompt'] as String? ?? '',
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               TextButton(
                 onPressed: () async {
-                  await Clipboard.setData(ClipboardData(text: improved));
+                  final text = item['enhanced_prompt'] as String? ?? '';
+                  await Clipboard.setData(ClipboardData(text: text));
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Prompt copied.')),
+                      const SnackBar(content: Text('Enhanced prompt copied.')),
                     );
                   }
                 },
                 child: const Text('Copy'),
               ),
+              TextButton(onPressed: onReopen, child: const Text('Reopen')),
             ],
           ),
-        ],
-      ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _SavedReportCard extends StatelessWidget {
+  const _SavedReportCard({required this.item, required this.onOpen});
+  final Map<String, dynamic> item;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) => _Card(
+    child: Row(
+      children: [
+        const Icon(Icons.folder_copy_outlined, color: blue),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                item['project_name'] as String? ?? 'Project',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+              Text(
+                item['source'] as String? ?? '',
+                style: const TextStyle(color: muted, fontSize: 11),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+        TextButton(onPressed: onOpen, child: const Text('Open report')),
+      ],
     ),
   );
 }

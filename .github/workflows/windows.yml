@@ -22,6 +22,13 @@ jobs:
         with:
           channel: stable
 
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Check Supabase Edge Functions
+        run: deno check supabase/functions/analyze-project/index.ts supabase/functions/enhance-prompt/index.ts
+
       - name: Install dependencies
         run: flutter pub get
 
