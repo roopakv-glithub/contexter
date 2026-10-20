@@ -65,7 +65,7 @@ It analyzes local and GitHub codebases, identifies architecture and dependencies
 - [x] Local history persistence (`local_history.dart`) preserved.
 - [x] Settings & NVIDIA API key storage preserved.
 
-### 5. Automated Testing & Verification
+### 5. Automated Testing, Build & Binary Release
 - [x] 20 unit and widget tests passing (`flutter test` 20/20):
   - Section ordering (A then B then C)
   - All 10 numbered subsections in Section A
@@ -77,6 +77,9 @@ It analyzes local and GitHub codebases, identifies architecture and dependencies
   - NVIDIA API key caching and persistence
   - Full 3-step project setup flow
 - [x] Flutter static analysis passes with 0 issues (`flutter analyze`).
+- [x] Windows x64 release build compiled: `build\windows\x64\runner\Release\`
+- [x] Packaged portable Windows zip bundle: `ContextForge-v1.6.0-windows.zip` (contains `ContextForge.exe`, `moscowt.exe`, all required DLLs, and application assets).
+- [x] Published as release asset on GitHub: https://github.com/roopakv-glithub/contexter/releases/tag/v1.6.0
 
 ---
 
