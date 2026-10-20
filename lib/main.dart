@@ -734,12 +734,14 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    folderController.text,
+                    folderController.text.isEmpty ? 'No folder selected' : folderController.text,
                     style: const TextStyle(color: muted),
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'GitHub · ${repoController.text.replaceFirst('https://github.com/', '')} · main',
+                    repoController.text.isEmpty
+                        ? 'No GitHub repository connected'
+                        : 'GitHub · ${repoController.text.replaceFirst('https://github.com/', '')}',
                     style: const TextStyle(color: muted),
                   ),
                 ],
@@ -766,7 +768,7 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
                           ),
                         ),
                         Text(
-                          '${_mascots[selectedMascot].name} · Claude Sonnet 5.5',
+                          '${_mascots[selectedMascot].name} · NVIDIA nemotron-3.5',
                           style: const TextStyle(color: muted),
                         ),
                         TextButton(
@@ -788,9 +790,11 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
           Expanded(
             child: _StatCard(
               label: 'Repository indexing',
-              value: '1,248 files indexed',
-              foot: 'Last updated today, 10:42 AM',
-              progress: true,
+              value: analysisReport != null
+                  ? '${(analysisReport!["files"] as List?)?.length ?? 0} files indexed'
+                  : 'No project analyzed',
+              foot: analysisReport != null ? 'Analysis complete' : 'Analyze a project to begin',
+              progress: false,
             ),
           ),
           const SizedBox(width: 16),
@@ -822,16 +826,17 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
-              for (final item in const [
-                ('Add rate limiting to the login endpoint', '10:42 AM', '−38%'),
-                (
-                  'Refactor token service to use refresh tokens',
-                  '10:15 AM',
-                  '−24%',
-                ),
-                ('Write tests for the billing webhook', '9:03 AM', '−41%'),
-                ('Explain the Prisma schema relations', 'Yesterday', '−19%'),
-              ])
+              for (final item in savedPrompts.isEmpty
+                  ? const [
+                      ('No prompts generated yet \u2014 use Setup Project to begin', '', ''),
+                    ]
+                  : savedPrompts.take(4).map((p) => (
+                      p['original'] as String? ?? 'Prompt',
+                      (p['created_at'] as String? ?? '').length >= 10
+                          ? (p['created_at'] as String).substring(0, 10)
+                          : 'Today',
+                      '',
+                    )))
                 _ActivityRow(title: item.$1, time: item.$2, saving: item.$3),
             ],
           ),
@@ -1134,10 +1139,10 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
                   ),
                   _ReviewRow('Agent name', agentController.text),
                   _ReviewRow(
-                    'Moscowt',
+                    'Companion',
                     '${_mascots[selectedMascot].name} — ${_mascots[selectedMascot].tagline.toLowerCase()}',
                   ),
-                  const _ReviewRow('AI model', 'NVIDIA z-ai/glm-5.3'),
+                  const _ReviewRow('AI model', 'NVIDIA nemotron-3.5-lightning-30b-a3b'),
                 ],
               ),
             ),
@@ -1390,27 +1395,33 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
       const SizedBox(height: 18),
       Row(
         children: [
-          const Expanded(
+          Expanded(
             child: _StatCard(
               label: 'Local folder',
-              value: r'...\Projects\moscowt-api',
-              foot: 'Project workspace',
+              value: folderController.text.isEmpty
+                  ? 'No folder selected'
+                  : folderController.text.split(RegExp(r'[\\/]')).where((p) => p.isNotEmpty).last,
+              foot: folderController.text.isEmpty ? 'Select in Setup Project' : 'Project workspace',
             ),
           ),
           const SizedBox(width: 14),
-          const Expanded(
+          Expanded(
             child: _StatCard(
               label: 'GitHub',
-              value: 'your-org/moscowt-api',
-              foot: 'Connected repository',
+              value: repoController.text.isEmpty
+                  ? 'Not connected'
+                  : repoController.text.replaceFirst('https://github.com/', ''),
+              foot: repoController.text.isEmpty ? 'Enter a repo URL in Setup' : 'Connected repository',
             ),
           ),
           const SizedBox(width: 14),
-          const Expanded(
+          Expanded(
             child: _StatCard(
               label: 'Indexed files',
-              value: '1,248',
-              foot: 'Updated today',
+              value: analysisReport != null
+                  ? '${(analysisReport!["files"] as List?)?.length ?? 0}'
+                  : '—',
+              foot: analysisReport != null ? 'From latest analysis' : 'Analyze a project first',
             ),
           ),
           const SizedBox(width: 14),

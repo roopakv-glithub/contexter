@@ -134,11 +134,11 @@ class ProjectAnalyzer {
       request.add(
         utf8.encode(
           jsonEncode({
-            'model': 'z-ai/glm-5.3',
+            'model': 'nvidia/nemotron-3.5-lightning-30b-a3b',
             'messages': [
               {'role': 'user', 'content': 'ping'}
             ],
-            'max_tokens': 5,
+            'max_tokens': 8,
           }),
         ),
       );
@@ -395,7 +395,7 @@ class ProjectAnalyzer {
         request.add(
           utf8.encode(
             jsonEncode({
-              'model': 'z-ai/glm-5.3',
+              'model': 'nvidia/nemotron-3.5-lightning-30b-a3b',
               'messages': [
                 {
                   'role': 'system',
@@ -415,7 +415,11 @@ class ProjectAnalyzer {
                 },
               ],
               'temperature': 0.25,
-              'max_tokens': 3500,
+              'max_tokens': 8192,
+              'extra_body': {
+                'chat_template_kwargs': {'enable_thinking': true},
+                'reasoning_budget': 4096,
+              },
             }),
           ),
         );
