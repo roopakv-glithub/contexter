@@ -98,6 +98,7 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
   // Per-source analysis statuses
   SourceStatus _folderStatus = SourceStatus.idle;
   SourceStatus _repoStatus = SourceStatus.idle;
+  String? _repoProgressMessage;
 
   // Final prompt generation
   String _finalPrompt = '';
@@ -224,17 +225,28 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
 
     if (repository.isNotEmpty && _analyzedSetupRepository != repository) {
       try {
-        final report = await _analyzer.analyzeRepository(repository);
+        final report = await _analyzer.analyzeRepository(
+          repository,
+          onProgress: (msg) {
+            if (mounted) setState(() => _repoProgressMessage = msg);
+          },
+        );
         if (mounted) {
           setState(() {
             _setupRepositoryReport = report;
             _analyzedSetupRepository = repository;
             _repoStatus = SourceStatus.ready;
+            _repoProgressMessage = null;
           });
         }
       } catch (error) {
         failures.add('GitHub analysis failed: $error');
-        if (mounted) setState(() => _repoStatus = SourceStatus.failed);
+        if (mounted) {
+          setState(() {
+            _repoStatus = SourceStatus.failed;
+            _repoProgressMessage = null;
+          });
+        }
       }
     }
 
@@ -1007,6 +1019,14 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
               child: Text(
                 '$scannedFiles project files scanned',
                 style: const TextStyle(color: muted, fontSize: 11),
+              ),
+            ),
+          if (_repoProgressMessage != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                _repoProgressMessage!,
+                style: const TextStyle(color: blue, fontSize: 11, fontWeight: FontWeight.w500),
               ),
             ),
         ],

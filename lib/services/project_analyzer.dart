@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'github_repo_analyzer.dart';
 import 'repository_scanner.dart';
 
 class ProjectAnalyzer {
@@ -63,16 +64,11 @@ class ProjectAnalyzer {
     );
   }
 
-  Future<Map<String, dynamic>> analyzeRepository(String repositoryUrl) async {
-    final apiKey = await loadSavedNvidiaKey();
-    final response = await _invoke(
-      'analyze-project',
-      body: {
-        'repositoryUrl': repositoryUrl,
-        if (apiKey != null && apiKey.isNotEmpty) 'nvidiaApiKey': apiKey,
-      },
-    );
-    return _readReport(response.data);
+  Future<Map<String, dynamic>> analyzeRepository(
+    String repositoryUrl, {
+    void Function(String message)? onProgress,
+  }) async {
+    return GithubRepoAnalyzer.analyze(repositoryUrl, onProgress: onProgress);
   }
 
   Future<Map<String, dynamic>> analyzeFolder(
