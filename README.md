@@ -1,9 +1,14 @@
-# Moscowt
+# ContextForge
 
-Moscowt is a Flutter desktop app for Windows that uses NVIDIA's OpenAI-compatible
-`z-ai/glm-5.3` API to analyze projects and enhance developer prompts. Its UI
-includes project setup, mascot/agent selection, an AI prompt workspace,
-repository analysis, saved report and prompt history, and settings.
+ContextForge is a Windows desktop application that analyzes software projects,
+inspects local folders and GitHub repositories, identifies their structures, dependencies,
+and technical constraints, compares their differences, and generates high-quality,
+context-aware prompts for AI coding agents. It uses NVIDIA's OpenAI-compatible
+`z-ai/glm-5.3` model for deep semantic understanding and prompt synthesis.
+
+Its UI includes a three-step Setup Project workflow (Create Project, Create Agents,
+and Review & Finalize), per-source analysis status indicators, mascot/agent companions,
+a prompt workspace, local history, and NVIDIA API key management.
 
 ## Run on Windows
 

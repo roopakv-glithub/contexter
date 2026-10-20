@@ -10,7 +10,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(const MaterialApp(home: MoscowtShell()));
+    await tester.pumpWidget(const MaterialApp(home: ContextForgeShell()));
     expect(
       find.text('Welcome back — here’s what your companion can do.'),
       findsOneWidget,
@@ -24,13 +24,13 @@ void main() {
 
     await tester.tap(find.text('Continue'));
     await tester.pumpAndSettle();
-    expect(find.text('Create your agent'), findsOneWidget);
+    expect(find.text('Configure your agent'), findsOneWidget);
 
     await tester.tap(find.text('Pixel').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Continue'));
     await tester.pumpAndSettle();
-    expect(find.text('Review and finish'), findsOneWidget);
+    expect(find.text('Review and generate'), findsOneWidget);
     expect(find.textContaining('Pixel — concise'), findsOneWidget);
 
     await tester.tap(find.text('Create Agent'));

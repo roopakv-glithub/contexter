@@ -12,7 +12,7 @@ import 'services/repository_scanner.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
-  runApp(const MoscowtApp());
+  runApp(const ContextForgeApp());
 }
 
 const blue = Color(0xFF0878F9);
@@ -20,12 +20,12 @@ const ink = Color(0xFF20232A);
 const muted = Color(0xFF858A95);
 const canvas = Color(0xFFF4F5F8);
 
-class MoscowtApp extends StatelessWidget {
-  const MoscowtApp({super.key});
+class ContextForgeApp extends StatelessWidget {
+  const ContextForgeApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Moscowt',
+    title: 'ContextForge',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,
@@ -55,28 +55,30 @@ class MoscowtApp extends StatelessWidget {
         bodySmall: TextStyle(color: muted, fontSize: 11),
       ),
     ),
-    home: const MoscowtShell(),
+    home: const ContextForgeShell(),
   );
 }
 
 enum Page { home, setup, agents, history, models, settings, enhance }
 
-class MoscowtShell extends StatefulWidget {
-  const MoscowtShell({super.key});
+// Source analysis status
+enum SourceStatus { idle, analyzing, ready, warning, failed }
+
+class ContextForgeShell extends StatefulWidget {
+  const ContextForgeShell({super.key});
 
   @override
-  State<MoscowtShell> createState() => _MoscowtShellState();
+  State<ContextForgeShell> createState() => _ContextForgeShellState();
 }
 
-class _MoscowtShellState extends State<MoscowtShell> {
+class _ContextForgeShellState extends State<ContextForgeShell> {
   Page page = Page.home;
   int setupStep = 0;
   int selectedMascot = 0;
   int selectedAgent = 0;
   bool busy = false;
-  String project = 'moscowt-api';
-  String prompt =
-      'Add rate limiting to the login endpoint so people can’t brute force it, use whatever we already have';
+  String project = 'my-project';
+  String prompt = 'Describe the task you want the coding agent to do…';
   String enhanced = '';
   Map<String, dynamic>? analysisReport;
   List<Map<String, dynamic>> savedReports = [];
@@ -92,17 +94,35 @@ class _MoscowtShellState extends State<MoscowtShell> {
   Map<String, dynamic>? _setupRepositoryReport;
   int scannedFiles = 0;
   String projectSource = '';
-  final projectController = TextEditingController(text: 'moscowt-api');
+
+  // Per-source analysis statuses
+  SourceStatus _folderStatus = SourceStatus.idle;
+  SourceStatus _repoStatus = SourceStatus.idle;
+
+  // Final prompt generation
+  String _finalPrompt = '';
+  bool _finalPromptBusy = false;
+  String? _finalPromptError;
+
+  // NVIDIA API key configuration (stored in memory; persisted via Supabase secret)
+  final _nvidiaKeyController = TextEditingController();
+  bool _nvidiaKeyVisible = false;
+  bool _nvidiaKeyBusy = false;
+  String? _nvidiaKeyStatus; // null=untested, 'ok'=connected, else error msg
+  bool _nvidiaKeySaved = false;
+
+  final projectController = TextEditingController(text: 'my-project');
   final folderController = TextEditingController();
   final repoController = TextEditingController();
   final descriptionController = TextEditingController();
-  final agentController = TextEditingController(text: 'API Helper');
+  final agentController = TextEditingController(text: 'Code Assistant');
   final purposeController = TextEditingController(
-    text: 'Improve prompts for backend tasks',
+    text: 'Analyze repositories and generate context-aware prompts',
   );
   final promptController = TextEditingController(
-    text: 'Add rate limiting to the login endpoint so people can’t brute force it, use whatever we already have',
+    text: 'Describe the task you want the coding agent to do…',
   );
+  final taskDescriptionController = TextEditingController();
   final searchController = TextEditingController();
   final repositoryAnalysisController = TextEditingController();
   final _localHistory = LocalHistory();
@@ -116,8 +136,10 @@ class _MoscowtShellState extends State<MoscowtShell> {
     agentController.dispose();
     purposeController.dispose();
     promptController.dispose();
+    taskDescriptionController.dispose();
     searchController.dispose();
     repositoryAnalysisController.dispose();
+    _nvidiaKeyController.dispose();
     super.dispose();
   }
 
@@ -164,13 +186,17 @@ class _MoscowtShellState extends State<MoscowtShell> {
     setState(() {
       setupAnalysisBusy = true;
       setupAnalysisError = null;
+      _finalPrompt = '';
+      _finalPromptError = null;
       if (folder != _analyzedSetupFolder) {
         _analyzedSetupFolder = null;
         _setupFolderReport = null;
+        if (folder.isNotEmpty) _folderStatus = SourceStatus.analyzing;
       }
       if (repository != _analyzedSetupRepository) {
         _analyzedSetupRepository = null;
         _setupRepositoryReport = null;
+        if (repository.isNotEmpty) _repoStatus = SourceStatus.analyzing;
       }
     });
     final failures = <String>[];
@@ -187,10 +213,12 @@ class _MoscowtShellState extends State<MoscowtShell> {
           setState(() {
             _setupFolderReport = report;
             _analyzedSetupFolder = folder;
+            _folderStatus = SourceStatus.ready;
           });
         }
       } catch (error) {
         failures.add('Folder analysis failed: $error');
+        if (mounted) setState(() => _folderStatus = SourceStatus.failed);
       }
     }
 
@@ -201,10 +229,12 @@ class _MoscowtShellState extends State<MoscowtShell> {
           setState(() {
             _setupRepositoryReport = report;
             _analyzedSetupRepository = repository;
+            _repoStatus = SourceStatus.ready;
           });
         }
       } catch (error) {
         failures.add('GitHub analysis failed: $error');
+        if (mounted) setState(() => _repoStatus = SourceStatus.failed);
       }
     }
 
@@ -252,8 +282,8 @@ class _MoscowtShellState extends State<MoscowtShell> {
       if (failures.isEmpty) {
         notice(
           historySaveError == null
-              ? 'Project summary is ready. Set up your agent next.'
-              : 'Project summary is ready, but local history could not be saved: $historySaveError',
+              ? 'Repository analysis ready. Configure your agent next.'
+              : 'Analysis ready, but local history could not be saved: $historySaveError',
         );
       }
     }
@@ -505,6 +535,95 @@ class _MoscowtShellState extends State<MoscowtShell> {
     }
   }
 
+  /// Generates the final ContextForge coding prompt by sending both repository
+  /// summaries and the user's task description to the Supabase edge function.
+  Future<void> _generateFinalPrompt() async {
+    final task = taskDescriptionController.text.trim();
+    if (task.isEmpty) {
+      notice('Enter a task description before generating the prompt.');
+      return;
+    }
+    if (_setupFolderReport == null && _setupRepositoryReport == null) {
+      notice('Analyze at least one repository source before generating a prompt.');
+      return;
+    }
+    setState(() {
+      _finalPromptBusy = true;
+      _finalPromptError = null;
+      _finalPrompt = '';
+    });
+    try {
+      final result = await _analyzer.generateContextPrompt(
+        projectName: projectController.text.trim().isEmpty
+            ? 'Project'
+            : projectController.text.trim(),
+        projectDescription: descriptionController.text.trim(),
+        agentName: agentController.text.trim(),
+        taskDescription: task,
+        folderReport: _setupFolderReport,
+        repositoryReport: _setupRepositoryReport,
+      );
+      if (mounted) {
+        setState(() => _finalPrompt = result);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _finalPromptError = '$error');
+        notice('Prompt generation failed: $error');
+      }
+    } finally {
+      if (mounted) setState(() => _finalPromptBusy = false);
+    }
+  }
+
+  /// Tests the NVIDIA API key by sending a minimal chat request.
+  Future<void> _testNvidiaConnection() async {
+    final key = _nvidiaKeyController.text.trim();
+    if (key.isEmpty) {
+      notice('Enter an NVIDIA API key first.');
+      return;
+    }
+    setState(() {
+      _nvidiaKeyBusy = true;
+      _nvidiaKeyStatus = null;
+    });
+    try {
+      await _analyzer.testNvidiaKey(key);
+      if (mounted) setState(() => _nvidiaKeyStatus = 'ok');
+    } catch (error) {
+      if (mounted) setState(() => _nvidiaKeyStatus = '$error');
+    } finally {
+      if (mounted) setState(() => _nvidiaKeyBusy = false);
+    }
+  }
+
+  /// Saves the NVIDIA API key to Supabase function secrets via edge function.
+  Future<void> _saveNvidiaKey() async {
+    final key = _nvidiaKeyController.text.trim();
+    if (key.isEmpty) {
+      notice('Enter an NVIDIA API key first.');
+      return;
+    }
+    setState(() {
+      _nvidiaKeyBusy = true;
+      _nvidiaKeyStatus = null;
+    });
+    try {
+      await _analyzer.saveNvidiaKey(key);
+      if (mounted) {
+        setState(() {
+          _nvidiaKeySaved = true;
+          _nvidiaKeyStatus = 'ok';
+        });
+        notice('NVIDIA API key saved. AI features are now active.');
+      }
+    } catch (error) {
+      if (mounted) setState(() => _nvidiaKeyStatus = '$error');
+    } finally {
+      if (mounted) setState(() => _nvidiaKeyBusy = false);
+    }
+  }
+
   void notice(String text) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
@@ -728,13 +847,13 @@ class _MoscowtShellState extends State<MoscowtShell> {
         setupStep == 0
             ? 'Set up your project'
             : setupStep == 1
-            ? 'Create your agent'
-            : 'Review and finish',
+            ? 'Configure your agent'
+            : 'Review and generate',
         setupStep == 0
             ? 'Connect a local folder, a GitHub repository, or both.'
             : setupStep == 1
-            ? 'Pick a Moscowt companion and tell it what to focus on.'
-            : 'Everything look right? You can change any of this later in My Agents.',
+            ? 'Pick a ContextForge companion and give it a purpose.'
+            : 'Review the analysis, enter your task, and generate the coding prompt.',
       ),
       const SizedBox(height: 18),
       _Stepper(active: setupStep),
@@ -821,6 +940,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
             if (value.trim() != _analyzedSetupFolder) {
               _analyzedSetupFolder = null;
               _setupFolderReport = null;
+              _folderStatus = SourceStatus.idle;
             }
             setupAnalysisError = null;
           }),
@@ -832,6 +952,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
         const SizedBox(height: 6),
         _SetupSourceStatus(
           label: 'Folder summary',
+          status: _folderStatus,
           ready:
               folderController.text.trim().isNotEmpty &&
               folderController.text.trim() == _analyzedSetupFolder,
@@ -845,6 +966,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
             if (value.trim() != _analyzedSetupRepository) {
               _analyzedSetupRepository = null;
               _setupRepositoryReport = null;
+              _repoStatus = SourceStatus.idle;
             }
             setupAnalysisError = null;
           }),
@@ -852,6 +974,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
         const SizedBox(height: 6),
         _SetupSourceStatus(
           label: 'GitHub summary',
+          status: _repoStatus,
           ready:
               repoController.text.trim().isNotEmpty &&
               repoController.text.trim() == _analyzedSetupRepository,
@@ -986,50 +1109,275 @@ class _MoscowtShellState extends State<MoscowtShell> {
     ],
   );
 
-  Widget _review() => _Card(
-    child: Row(
-      children: [
-        Expanded(
-          child: Column(
-            children: [
-              _ReviewRow('Project name', projectController.text),
-              _ReviewRow('Local folder', folderController.text),
-              _ReviewRow(
-                'GitHub',
-                repoController.text.replaceFirst('https://github.com/', ''),
+  Widget _review() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _Card(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                children: [
+                  _ReviewRow('Project name', projectController.text),
+                  _ReviewRow(
+                    'Local folder',
+                    folderController.text.isEmpty
+                        ? 'Not connected'
+                        : folderController.text,
+                  ),
+                  _ReviewRow(
+                    'GitHub',
+                    repoController.text.isEmpty
+                        ? 'Not connected'
+                        : repoController.text.replaceFirst('https://github.com/', ''),
+                  ),
+                  _ReviewRow('Agent name', agentController.text),
+                  _ReviewRow(
+                    'Moscowt',
+                    '${_mascots[selectedMascot].name} — ${_mascots[selectedMascot].tagline.toLowerCase()}',
+                  ),
+                  const _ReviewRow('AI model', 'NVIDIA z-ai/glm-5.3'),
+                ],
               ),
-              _ReviewRow('Agent name', agentController.text),
-              _ReviewRow(
-                'Moscowt',
-                '${_mascots[selectedMascot].name} — ${_mascots[selectedMascot].tagline.toLowerCase()}',
+            ),
+            const SizedBox(width: 28),
+            SizedBox(
+              width: 220,
+              child: Column(
+                children: [
+                  _Mascot(size: 118, index: selectedMascot),
+                  const SizedBox(height: 12),
+                  Text(
+                    _mascots[selectedMascot].name,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Text(
+                    'Ready to generate context',
+                    style: TextStyle(color: muted),
+                  ),
+                ],
               ),
-              const _ReviewRow('AI model', 'Claude Sonnet 5.5'),
-            ],
-          ),
+            ),
+          ],
         ),
-        const SizedBox(width: 28),
-        SizedBox(
-          width: 220,
-          child: Column(
-            children: [
-              _Mascot(size: 118, index: selectedMascot),
-              const SizedBox(height: 12),
-              Text(
-                _mascots[selectedMascot].name,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
+      ),
+      const SizedBox(height: 16),
+      if (_setupFolderReport != null || _setupRepositoryReport != null) ...[
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_setupFolderReport != null)
+              Expanded(
+                child: _Card(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.folder_outlined, size: 18, color: blue),
+                          SizedBox(width: 8),
+                          Text(
+                            'Local Project Analysis',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Spacer(),
+                          Icon(
+                            Icons.check_circle,
+                            size: 16,
+                            color: Color(0xFF1EAF61),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _setupFolderReport!['overview'] is String
+                            ? _setupFolderReport!['overview'] as String
+                            : 'Local codebase structure identified.',
+                        style: const TextStyle(fontSize: 12, color: ink),
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${(_setupFolderReport!['files'] as List?)?.length ?? 0} files analyzed',
+                        style: const TextStyle(fontSize: 11, color: muted),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const Text(
-                'Ready to meet your project',
-                style: TextStyle(color: muted),
+            if (_setupFolderReport != null && _setupRepositoryReport != null)
+              const SizedBox(width: 14),
+            if (_setupRepositoryReport != null)
+              Expanded(
+                child: _Card(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.hub_outlined, size: 18, color: blue),
+                          SizedBox(width: 8),
+                          Text(
+                            'GitHub Analysis',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Spacer(),
+                          Icon(
+                            Icons.check_circle,
+                            size: 16,
+                            color: Color(0xFF1EAF61),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _setupRepositoryReport!['overview'] is String
+                            ? _setupRepositoryReport!['overview'] as String
+                            : 'GitHub repository structure identified.',
+                        style: const TextStyle(fontSize: 12, color: ink),
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '${(_setupRepositoryReport!['files'] as List?)?.length ?? 0} files analyzed',
+                        style: const TextStyle(fontSize: 11, color: muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+      ],
+      _Card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Task for AI Coding Agent',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Enter the specific implementation, feature, or refactoring goal you want the agent to execute.',
+              style: TextStyle(color: muted, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            _Field(
+              label: 'Task Description',
+              controller: taskDescriptionController,
+              hint:
+                  'e.g. Implement user authentication rate limiting with existing middleware, update routes and unit tests...',
+              maxLines: 3,
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: _finalPromptBusy ? null : _generateFinalPrompt,
+                  icon: _finalPromptBusy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.auto_awesome),
+                  label: Text(
+                    _finalPromptBusy
+                        ? 'Generating prompt with ContextForge…'
+                        : 'Generate Coding Prompt',
+                  ),
+                ),
+                if (_finalPrompt.isNotEmpty) ...[
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: _finalPrompt));
+                      notice('ContextForge prompt copied to clipboard!');
+                    },
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('Copy Prompt'),
+                  ),
+                ],
+              ],
+            ),
+            if (_finalPromptError != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFDE8E8),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.error_outline,
+                      color: Colors.redAccent,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _finalPromptError!,
+                        style: const TextStyle(
+                          color: Colors.redAccent,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
-          ),
+            if (_finalPrompt.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Text(
+                'Generated ContextForge Prompt (Ready for Coding Agent):',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: ink,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    _finalPrompt,
+                    style: const TextStyle(
+                      color: Color(0xFFECEFF4),
+                      fontFamily: 'Consolas',
+                      fontSize: 12,
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
-      ],
-    ),
+      ),
+    ],
   );
 
   Widget _agents() => Column(
@@ -1427,7 +1775,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
     children: [
       const _Heading(
         'Settings',
-        'Customize how Moscowt looks, behaves and protects your data.',
+        'Customize how ContextForge looks, behaves and protects your data.',
       ),
       const SizedBox(height: 18),
       Expanded(
@@ -1447,7 +1795,7 @@ class _MoscowtShellState extends State<MoscowtShell> {
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const Text(
-                    'Choose how Moscowt looks on this device.',
+                    'Choose how ContextForge looks on this device.',
                     style: TextStyle(color: muted),
                   ),
                   const SizedBox(height: 10),
@@ -1490,13 +1838,115 @@ class _MoscowtShellState extends State<MoscowtShell> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'AI models',
+                    'NVIDIA AI Configuration',
                     style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 6),
                   const Text(
-                    'Moscowt uses NVIDIA z-ai/glm-5.3 through Supabase Edge Functions. No account is required, and the NVIDIA API key stays server-side.',
-                    style: TextStyle(color: muted),
+                    'ContextForge uses NVIDIA z-ai/glm-5.3 for repository understanding and prompt generation. Configure your API key below for direct, ultra-fast inference.',
+                    style: TextStyle(color: muted, fontSize: 13),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _nvidiaKeyController,
+                          obscureText: !_nvidiaKeyVisible,
+                          decoration: InputDecoration(
+                            labelText: 'NVIDIA API Key',
+                            hintText: 'nvapi-...',
+                            filled: true,
+                            fillColor: Colors.white,
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 14,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFE0E2E7),
+                              ),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(10),
+                              borderSide: const BorderSide(
+                                color: Color(0xFFE0E2E7),
+                              ),
+                            ),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _nvidiaKeyVisible
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                                size: 18,
+                              ),
+                              onPressed: () => setState(
+                                () => _nvidiaKeyVisible = !_nvidiaKeyVisible,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _nvidiaKeyBusy ? null : _testNvidiaConnection,
+                        icon: _nvidiaKeyBusy
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.wifi_tethering, size: 16),
+                        label: const Text('Test Connection'),
+                      ),
+                      const SizedBox(width: 10),
+                      FilledButton.icon(
+                        onPressed: _nvidiaKeyBusy ? null : _saveNvidiaKey,
+                        icon: const Icon(Icons.save_outlined, size: 16),
+                        label: const Text('Save Key'),
+                      ),
+                      const SizedBox(width: 14),
+                      if (_nvidiaKeyStatus == 'ok')
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.check_circle,
+                              color: Color(0xFF1EAF61),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _nvidiaKeySaved
+                                  ? 'Key saved & connected'
+                                  : 'Connected to NVIDIA AI',
+                              style: const TextStyle(
+                                color: Color(0xFF1EAF61),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        )
+                      else if (_nvidiaKeyStatus != null)
+                        Expanded(
+                          child: Text(
+                            _nvidiaKeyStatus!,
+                            style: const TextStyle(
+                              color: Colors.redAccent,
+                              fontSize: 12,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),
@@ -1954,12 +2404,14 @@ class _Field extends StatelessWidget {
     this.hint,
     this.trailing,
     this.onChanged,
+    this.maxLines = 1,
   });
   final String label;
   final TextEditingController controller;
   final String? hint;
   final Widget? trailing;
   final ValueChanged<String>? onChanged;
+  final int maxLines;
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1971,6 +2423,7 @@ class _Field extends StatelessWidget {
             child: TextField(
               controller: controller,
               onChanged: onChanged,
+              maxLines: maxLines,
               decoration: InputDecoration(
                 hintText: hint,
                 filled: true,
@@ -1998,31 +2451,98 @@ class _Field extends StatelessWidget {
 }
 
 class _SetupSourceStatus extends StatelessWidget {
-  const _SetupSourceStatus({required this.label, required this.ready});
+  const _SetupSourceStatus({
+    required this.label,
+    this.ready = false,
+    this.status = SourceStatus.idle,
+  });
 
   final String label;
   final bool ready;
+  final SourceStatus status;
 
   @override
-  Widget build(BuildContext context) => Row(
-    children: [
-      Icon(
-        ready ? Icons.check_circle : Icons.radio_button_unchecked,
-        size: 16,
-        color: ready ? const Color(0xFF1EAF61) : muted,
-      ),
-      const SizedBox(width: 6),
-      Text(
-        ready ? '$label ready' : label,
-        style: TextStyle(
-          color: ready ? const Color(0xFF1EAF61) : muted,
-          fontSize: 11,
-          fontWeight: ready ? FontWeight.w600 : FontWeight.normal,
+  Widget build(BuildContext context) {
+    Widget icon;
+    String statusText;
+    Color color;
+
+    switch (status) {
+      case SourceStatus.analyzing:
+        icon = const SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(strokeWidth: 2, color: blue),
+        );
+        statusText = '$label analyzing…';
+        color = blue;
+        break;
+      case SourceStatus.ready:
+        icon = const Icon(
+          Icons.check_circle,
+          size: 16,
+          color: Color(0xFF1EAF61),
+        );
+        statusText = '$label ready';
+        color = const Color(0xFF1EAF61);
+        break;
+      case SourceStatus.failed:
+        icon = const Icon(
+          Icons.error_outline,
+          size: 16,
+          color: Colors.redAccent,
+        );
+        statusText = '$label analysis failed';
+        color = Colors.redAccent;
+        break;
+      case SourceStatus.warning:
+        icon = const Icon(
+          Icons.warning_amber_rounded,
+          size: 16,
+          color: Colors.orangeAccent,
+        );
+        statusText = '$label completed with warnings';
+        color = Colors.orangeAccent;
+        break;
+      case SourceStatus.idle:
+        if (ready) {
+          icon = const Icon(
+            Icons.check_circle,
+            size: 16,
+            color: Color(0xFF1EAF61),
+          );
+          statusText = '$label ready';
+          color = const Color(0xFF1EAF61);
+        } else {
+          icon = const Icon(
+            Icons.radio_button_unchecked,
+            size: 16,
+            color: muted,
+          );
+          statusText = label;
+          color = muted;
+        }
+    }
+
+    return Row(
+      children: [
+        icon,
+        const SizedBox(width: 6),
+        Text(
+          statusText,
+          style: TextStyle(
+            color: color,
+            fontSize: 11,
+            fontWeight: (status == SourceStatus.ready || ready)
+                ? FontWeight.w600
+                : FontWeight.normal,
+          ),
         ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }
+
 
 class _ActionButton extends StatelessWidget {
   const _ActionButton(

@@ -43,12 +43,12 @@ jobs:
 
       - name: Package Windows release
         shell: pwsh
-        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/windows/x64/runner/Release/moscowt-windows-x64.zip
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath build/windows/x64/runner/Release/contextforge-windows-x64.zip
 
       - name: Upload Windows release
         uses: actions/upload-artifact@v4
         with:
-          name: moscowt-windows
+          name: contextforge-windows
           path: build/windows/x64/runner/Release/
           if-no-files-found: error
 
@@ -56,8 +56,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Moscowt ${{ github.ref_name }}
+          name: ContextForge ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             build/windows/x64/runner/Release/moscowt.exe
-            build/windows/x64/runner/Release/moscowt-windows-x64.zip
+            build/windows/x64/runner/Release/contextforge-windows-x64.zip
