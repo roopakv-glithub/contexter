@@ -251,8 +251,11 @@ class ProjectAnalyzer {
     }
   }
 
-  /// Generates the final, comprehensive ContextForge coding prompt by combining
-  /// the user's task description with repository evidence from local and/or GitHub analysis.
+  /// Generates the structured Next-Step Development (NNSD) coding prompt
+  /// in three clearly separated sections:
+  /// - SECTION A — NNSD IMPLEMENTATION PROMPT (First, actionable prompt with 10 subsections)
+  /// - SECTION B — LOCAL PROJECT ANALYSIS SUMMARY — REFERENCE CONTEXT (Second, reference context)
+  /// - SECTION C — GITHUB REPOSITORY ANALYSIS SUMMARY — REFERENCE CONTEXT (Third, reference context)
   Future<String> generateContextPrompt({
     required String projectName,
     required String projectDescription,
@@ -261,7 +264,10 @@ class ProjectAnalyzer {
     Map<String, dynamic>? folderReport,
     Map<String, dynamic>? repositoryReport,
   }) async {
-    // 1. Synthesize local vs remote differences and structure
+    final cleanTask = RepositoryScanner.redactSecrets(taskDescription).trim();
+    final cleanProject = RepositoryScanner.redactSecrets(projectName).trim();
+
+    // 1. Gather files, technologies, and dependencies from reports
     final localFiles = (folderReport?['files'] as List?)
             ?.whereType<Map>()
             .map((e) => Map<String, dynamic>.from(e))
@@ -273,19 +279,6 @@ class ProjectAnalyzer {
             .toList() ??
         [];
 
-    final localPaths = localFiles.map((f) => f['path'] as String? ?? '').where((p) => p.isNotEmpty).toSet();
-    final remotePaths = remoteFiles.map((f) => f['path'] as String? ?? '').where((p) => p.isNotEmpty).toSet();
-
-    final commonPaths = localPaths.intersection(remotePaths);
-    final localOnlyPaths = localPaths.difference(remotePaths);
-    final remoteOnlyPaths = remotePaths.difference(localPaths);
-
-    final localOverview = folderReport?['overview'] as String? ?? '';
-    final remoteOverview = repositoryReport?['overview'] as String? ?? '';
-    final localArchitecture = folderReport?['architecture'] as String? ?? '';
-    final remoteArchitecture = repositoryReport?['architecture'] as String? ?? '';
-
-    // Collect technologies & dependencies
     final technologies = <String>{};
     for (final report in [folderReport, repositoryReport]) {
       if (report == null) continue;
@@ -293,7 +286,9 @@ class ProjectAnalyzer {
       if (techs != null) {
         for (final t in techs) {
           if (t is Map && t['name'] != null) {
-            technologies.add('${t['name']}${t['category'] != null ? ' (${t['category']})' : ''}');
+            technologies.add(
+              '${t['name']}${t['category'] != null ? ' (${t['category']})' : ''}',
+            );
           }
         }
       }
@@ -306,14 +301,21 @@ class ProjectAnalyzer {
       if (deps != null) {
         for (final d in deps) {
           if (d is Map && d['name'] != null) {
-            dependencies.add('${d['name']} ${d['version'] ?? ''} - ${d['purpose'] ?? ''}'.trim());
+            dependencies.add(
+              '${d['name']} ${d['version'] ?? ''} - ${d['purpose'] ?? ''}'
+                  .trim(),
+            );
           }
         }
       }
     }
 
-    // Identify files relevant to the user's task
-    final taskWords = taskDescription.toLowerCase().split(RegExp(r'\W+')).where((w) => w.length > 2).toSet();
+    // Match task words to find grounded relevant files
+    final taskWords = cleanTask
+        .toLowerCase()
+        .split(RegExp(r'\W+'))
+        .where((w) => w.length > 2)
+        .toSet();
     final allFiles = [...localFiles, ...remoteFiles];
     final relevantFiles = <String, String>{};
 
@@ -329,213 +331,513 @@ class ProjectAnalyzer {
       final moduleLower = module.toLowerCase();
 
       for (final word in taskWords) {
-        if (pathLower.contains(word) || purposeLower.contains(word) || moduleLower.contains(word)) {
+        if (pathLower.contains(word) ||
+            purposeLower.contains(word) ||
+            moduleLower.contains(word)) {
           matches = true;
           break;
         }
       }
 
-      if (matches || relevantFiles.length < 5) {
+      if (matches) {
         relevantFiles[path] = purpose.isNotEmpty ? purpose : module;
       }
-      if (relevantFiles.length >= 15) break;
+      if (relevantFiles.length >= 10) break;
     }
 
-    // Build the structured Markdown context document
-    final buffer = StringBuffer();
-    buffer.writeln('# ContextForge Coding Agent Instruction');
-    buffer.writeln();
-    buffer.writeln('## A. Project Overview');
-    buffer.writeln('**Project:** $projectName');
-    if (projectDescription.isNotEmpty) {
-      buffer.writeln('**Description:** $projectDescription');
-    }
-    if (agentName.isNotEmpty) {
-      buffer.writeln('**Assigned Agent Role:** $agentName');
-    }
-    if (localOverview.isNotEmpty) {
-      buffer.writeln('\n**Local Repository Summary:**\n$localOverview');
-    }
-    if (remoteOverview.isNotEmpty) {
-      buffer.writeln('\n**Remote Repository Summary:**\n$remoteOverview');
-    }
-    if (localArchitecture.isNotEmpty || remoteArchitecture.isNotEmpty) {
-      buffer.writeln('\n**Architecture:**');
-      buffer.writeln(localArchitecture.isNotEmpty ? localArchitecture : remoteArchitecture);
-    }
-
-    buffer.writeln();
-    buffer.writeln('## B. User Requested Change');
-    buffer.writeln(taskDescription);
-
-    buffer.writeln();
-    buffer.writeln('## C. Repository Structure & Key Components');
-    if (localFiles.isNotEmpty) {
-      buffer.writeln('Local inventory contains ${localFiles.length} analyzed files.');
-    }
-    if (remoteFiles.isNotEmpty) {
-      buffer.writeln('GitHub repository contains ${remoteFiles.length} analyzed files.');
-    }
-    if (technologies.isNotEmpty) {
-      buffer.writeln('\n**Identified Technologies:**');
-      for (final tech in technologies.take(12)) {
-        buffer.writeln('- $tech');
+    // If no direct keyword matches, take key files as candidates
+    if (relevantFiles.isEmpty) {
+      for (final file in allFiles.take(5)) {
+        final path = file['path'] as String? ?? '';
+        final purpose = file['purpose'] as String? ?? '';
+        final module = file['module'] as String? ?? '';
+        if (path.isNotEmpty) {
+          relevantFiles[path] = purpose.isNotEmpty ? purpose : module;
+        }
       }
     }
 
-    buffer.writeln();
-    buffer.writeln('## D. Existing Implementation');
-    buffer.writeln('Inspect the repository to understand current conventions and data contracts before modifying code.');
-    buffer.writeln('Do not assume files or models that have not been verified.');
+    // 2. Build Section B (Local Project Analysis Summary — Reference Context)
+    final sectionB = _buildLocalSummarySection(cleanProject, folderReport);
 
-    buffer.writeln();
-    buffer.writeln('## E. Files to Inspect or Modify');
-    if (relevantFiles.isNotEmpty) {
-      relevantFiles.forEach((p, purp) {
-        buffer.writeln('- `$p` — $purp');
-      });
-    } else {
-      for (final p in localPaths.take(8)) {
-        buffer.writeln('- `$p`');
-      }
-    }
+    // 3. Build Section C (GitHub Repository Analysis Summary — Reference Context)
+    final sectionC = _buildRemoteSummarySection(repositoryReport);
 
-    buffer.writeln();
-    buffer.writeln('## F. Local-versus-Remote Differences');
-    if (folderReport != null && repositoryReport != null) {
-      buffer.writeln('- Files present in both: ${commonPaths.length}');
-      buffer.writeln('- Files present only locally: ${localOnlyPaths.length} ${localOnlyPaths.isNotEmpty ? '(${localOnlyPaths.take(5).join(', ')})' : ''}');
-      buffer.writeln('- Files present only remotely: ${remoteOnlyPaths.length} ${remoteOnlyPaths.isNotEmpty ? '(${remoteOnlyPaths.take(5).join(', ')})' : ''}');
-    } else if (folderReport != null) {
-      buffer.writeln('Local repository analysis complete. No remote repository was specified for comparison.');
-    } else if (repositoryReport != null) {
-      buffer.writeln('Remote GitHub analysis complete. No local folder was specified for comparison.');
-    }
+    // 4. Generate Section A (NNSD Implementation Prompt)
+    String sectionA = '';
 
-    buffer.writeln();
-    buffer.writeln('## G. Functions and Dependencies');
-    if (dependencies.isNotEmpty) {
-      for (final dep in dependencies.take(15)) {
-        buffer.writeln('- $dep');
-      }
-    } else {
-      buffer.writeln('Preserve existing dependencies and version constraints.');
-    }
-
-    buffer.writeln();
-    buffer.writeln('## H. Environment & Configuration Requirements');
-    buffer.writeln('- Preserve all environment configurations (`.env`, `.env.example`, build configs).');
-    buffer.writeln('- Never overwrite secrets or hardcode sensitive credentials.');
-    buffer.writeln('- If new environment variables are needed, update `.env.example` with placeholders.');
-
-    buffer.writeln();
-    buffer.writeln('## I. Conflict and Compatibility Risks');
-    if (localOnlyPaths.isNotEmpty && remoteOnlyPaths.isNotEmpty) {
-      buffer.writeln('Notice: Local tree and remote repository have diverging files. Verify non-overlapping changes before merging.');
-    } else {
-      buffer.writeln('No immediate file naming collisions detected.');
-    }
-
-    buffer.writeln();
-    buffer.writeln('## J. Implementation Plan');
-    buffer.writeln('1. Inspect the relevant files identified above.');
-    buffer.writeln('2. Determine the minimal set of code changes needed to achieve the goal.');
-    buffer.writeln('3. Implement the feature respecting existing naming patterns, state management, and conventions.');
-    buffer.writeln('4. Verify with tests or build commands.');
-
-    buffer.writeln();
-    buffer.writeln('## K. Testing and Validation Instructions');
-    buffer.writeln('Run the project\'s existing test suite or static analysis checks after implementing the change.');
-
-    buffer.writeln();
-    buffer.writeln('## L. Preservation Requirements');
-    buffer.writeln('- Do NOT modify or delete unrelated features.');
-    buffer.writeln('- Do NOT overwrite uncommitted local work.');
-    buffer.writeln('- Preserve existing UI aesthetics, typography, and layout.');
-
-    buffer.writeln();
-    buffer.writeln('## M. Completion Criteria');
-    buffer.writeln('- The requested functionality: "$taskDescription" is fully working.');
-    buffer.writeln('- Existing features continue to operate without regression.');
-    buffer.writeln('- The project compiles and runs cleanly.');
-
-    final synthesizedContext = buffer.toString();
-
-    // 2. If NVIDIA key is available or Supabase function is accessible, enhance with AI reasoning
+    // Check if NVIDIA API key is available
     final key = activeNvidiaKey ?? await loadSavedNvidiaKey();
     if (key != null && key.isNotEmpty) {
       try {
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 25);
-        final request = await client.postUrl(
-          Uri.parse('https://integrate.api.nvidia.com/v1/chat/completions'),
+        final aiSectionA = await _generateAiSectionA(
+          apiKey: key,
+          projectName: cleanProject,
+          projectDescription: projectDescription,
+          taskDescription: cleanTask,
+          agentName: agentName,
+          folderReport: folderReport,
+          repositoryReport: repositoryReport,
+          technologies: technologies,
+          dependencies: dependencies,
+          relevantFiles: relevantFiles,
         );
-        request.headers.set('Authorization', 'Bearer $key');
-        request.headers.set('Content-Type', 'application/json');
-        request.add(
-          utf8.encode(
-            jsonEncode({
-              'model': 'nvidia/nemotron-3.5-lightning-30b-a3b',
-              'messages': [
-                {
-                  'role': 'system',
-                  'content':
-                      'You are ContextForge, an expert software architecture and prompt engineering assistant. '
-                      'Reason over the provided repository context and the user\'s requested task. '
-                      'Synthesize a comprehensive, production-ready, context-aware coding prompt in Markdown. '
-                      'Follow all sections (A through M) clearly. Do not invent missing files or dependencies. '
-                      'Keep technical guidance exact, actionable, and strictly preserving existing architecture.',
-                },
-                {
-                  'role': 'user',
-                  'content':
-                      'Project: $projectName\n'
-                      'Task: $taskDescription\n\n'
-                      'Context Document:\n$synthesizedContext',
-                },
-              ],
-              'temperature': 0.25,
-              'max_tokens': 8192,
-              'extra_body': {
-                'chat_template_kwargs': {'enable_thinking': true},
-                'reasoning_budget': 4096,
-              },
-            }),
-          ),
-        );
-        final response = await request.close();
-        if (response.statusCode == 200) {
-          final body = await response.transform(utf8.decoder).join();
-          final parsed = jsonDecode(body);
-          final content = parsed?['choices']?[0]?['message']?['content'];
-          if (content is String && content.trim().isNotEmpty) {
-            return content.trim();
-          }
+        if (_isValidSectionA(aiSectionA, cleanTask)) {
+          sectionA = aiSectionA;
         }
       } catch (_) {
-        // Fall back to synthesized Markdown context
+        // Fall back to deterministic Section A builder
       }
     }
 
-    // Try Supabase edge function if available
-    try {
-      final response = await _invoke(
-        'enhance-prompt',
-        body: {
-          'prompt': taskDescription,
-          'projectName': projectName,
-          'context': synthesizedContext,
-        },
+    if (sectionA.isEmpty) {
+      sectionA = _buildDeterministicSectionA(
+        projectName: cleanProject,
+        taskDescription: cleanTask,
+        relevantFiles: relevantFiles,
+        technologies: technologies,
+        dependencies: dependencies,
+        folderReport: folderReport,
+        repositoryReport: repositoryReport,
       );
-      final data = response.data;
-      if (data is Map && data['enhancedPrompt'] is String) {
-        return (data['enhancedPrompt'] as String).trim();
-      }
-    } catch (_) {
-      // Fall back to synthesized Markdown context
     }
 
-    return synthesizedContext;
+    // 5. Assemble and validate 3-section output
+    return _assembleFinalResult(
+      sectionA: sectionA,
+      sectionB: sectionB,
+      sectionC: sectionC,
+    );
+  }
+
+  Future<String> _generateAiSectionA({
+    required String apiKey,
+    required String projectName,
+    required String projectDescription,
+    required String taskDescription,
+    required String agentName,
+    required Map<String, dynamic>? folderReport,
+    required Map<String, dynamic>? repositoryReport,
+    required Set<String> technologies,
+    required Set<String> dependencies,
+    required Map<String, String> relevantFiles,
+  }) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 35);
+    try {
+      final request = await client.postUrl(
+        Uri.parse('https://integrate.api.nvidia.com/v1/chat/completions'),
+      );
+      request.headers.set('Authorization', 'Bearer $apiKey');
+      request.headers.set('Content-Type', 'application/json');
+
+      final filesSnippet = relevantFiles.isNotEmpty
+          ? relevantFiles.entries
+              .map((e) => '- `${e.key}` — ${e.value}')
+              .join('\n')
+          : 'Files to identify during repository inspection.';
+
+      final promptPayload = {
+        'model': 'nvidia/nemotron-3.5-lightning-30b-a3b',
+        'messages': [
+          {
+            'role': 'system',
+            'content':
+                'You are ContextForge, an expert software architecture and Next-Step Development (NNSD) prompt engineer.\n'
+                'Your task is to generate ONLY "SECTION A — NNSD IMPLEMENTATION PROMPT" for another coding AI to implement the user\'s requested task.\n\n'
+                'CRITICAL RULES:\n'
+                '1. The user\'s original coding request defines WHAT must be implemented. Focus 100% on this task. Do NOT invent unrelated features.\n'
+                '2. Ground file paths in the provided repository context. Do not invent non-existent files.\n'
+                '3. Output ONLY Section A with the exact structure and all 10 numbered subsections below.\n'
+                '4. Never output secrets or placeholder keys.\n'
+                '5. Do NOT include Section B or Section C in your response; they are added separately.\n\n'
+                'REQUIRED FORMAT:\n'
+                '# NNSD — [Short Feature Name]\n\n'
+                '## 1. Objective\n'
+                '[Exact description of what the user wants implemented.]\n\n'
+                '## 2. Existing Functionality\n'
+                '[Existing behavior relevant to the requested feature. Explain what already works and must be preserved.]\n\n'
+                '## 3. Required Changes\n'
+                '[Numbered, implementable requirements detailing exact functionality to add or modify.]\n\n'
+                '## 4. Relevant Files to Inspect or Modify\n'
+                '[Known relevant files, responsibilities, and expected changes. Use actual paths when available.]\n\n'
+                '## 5. Dependencies and Technologies\n'
+                '[Existing libraries, frameworks, and APIs. Reuse existing dependencies wherever possible.]\n\n'
+                '## 6. Implementation Instructions\n'
+                '[Clear, ordered implementation plan integrating with existing architecture, validation, and error handling.]\n\n'
+                '## 7. Environment and Configuration Constraints\n'
+                '[Specify preserved configurations. Never expose secrets or tokens.]\n\n'
+                '## 8. Compatibility and Preservation Requirements\n'
+                '[Explicitly list existing features and behavior that must not change. Prevent unrelated refactoring.]\n\n'
+                '## 9. Acceptance Criteria\n'
+                '[Measurable conditions that must be satisfied for completion.]\n\n'
+                '## 10. Verification\n'
+                '[Specify relevant tests, checks, and expected results.]\n',
+          },
+          {
+            'role': 'user',
+            'content':
+                'Project: $projectName\n'
+                'User Task:\n$taskDescription\n\n'
+                'Repository Context:\n'
+                '- Technologies: ${technologies.join(', ')}\n'
+                '- Dependencies: ${dependencies.take(10).join(', ')}\n'
+                '- Relevant Files:\n$filesSnippet\n'
+                '- Local Overview: ${folderReport?['overview'] ?? 'N/A'}\n'
+                '- Remote Overview: ${repositoryReport?['overview'] ?? 'N/A'}\n',
+          },
+        ],
+        'temperature': 0.2,
+        'max_tokens': 4096,
+        'extra_body': {
+          'chat_template_kwargs': {'enable_thinking': true},
+          'reasoning_budget': 2048,
+        },
+      };
+
+      request.add(utf8.encode(jsonEncode(promptPayload)));
+      final response = await request.close();
+      if (response.statusCode == 200) {
+        final body = await response.transform(utf8.decoder).join();
+        final parsed = jsonDecode(body);
+        final content = parsed?['choices']?[0]?['message']?['content'];
+        if (content is String && content.trim().isNotEmpty) {
+          return content.trim();
+        }
+      }
+    } finally {
+      client.close();
+    }
+    return '';
+  }
+
+  bool _isValidSectionA(String sectionA, String taskDescription) {
+    if (sectionA.length < 150) return false;
+    const requiredSubsections = [
+      '## 1. Objective',
+      '## 2. Existing Functionality',
+      '## 3. Required Changes',
+      '## 4. Relevant Files to Inspect or Modify',
+      '## 5. Dependencies and Technologies',
+      '## 6. Implementation Instructions',
+      '## 7. Environment and Configuration Constraints',
+      '## 8. Compatibility and Preservation Requirements',
+      '## 9. Acceptance Criteria',
+      '## 10. Verification',
+    ];
+    for (final sub in requiredSubsections) {
+      if (!sectionA.contains(sub)) return false;
+    }
+    return true;
+  }
+
+  String _buildDeterministicSectionA({
+    required String projectName,
+    required String taskDescription,
+    required Map<String, String> relevantFiles,
+    required Set<String> technologies,
+    required Set<String> dependencies,
+    Map<String, dynamic>? folderReport,
+    Map<String, dynamic>? repositoryReport,
+  }) {
+    // Generate short feature title from taskDescription
+    final firstSentence = taskDescription.split(RegExp(r'[\.\n]')).first.trim();
+    final featureTitle = firstSentence.length > 60
+        ? '${firstSentence.substring(0, 57)}...'
+        : firstSentence;
+
+    final buffer = StringBuffer();
+    buffer.writeln('# NNSD — $featureTitle');
+    buffer.writeln();
+
+    buffer.writeln('## 1. Objective');
+    buffer.writeln('Implement the following requested enhancement for $projectName:');
+    buffer.writeln(taskDescription);
+    buffer.writeln();
+
+    buffer.writeln('## 2. Existing Functionality');
+    final overview = folderReport?['overview'] as String? ??
+        repositoryReport?['overview'] as String? ??
+        'Existing project codebase with standard architecture.';
+    buffer.writeln(overview);
+    buffer.writeln('Inspect existing components and data contracts before modifying code.');
+    buffer.writeln('Preserve all current working behavior.');
+    buffer.writeln();
+
+    buffer.writeln('## 3. Required Changes');
+    final taskLines = taskDescription
+        .split(RegExp(r'[\n\r]+'))
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (taskLines.length > 1) {
+      for (var i = 0; i < taskLines.length; i++) {
+        buffer.writeln('### Requirement ${i + 1}');
+        buffer.writeln(
+          '- ${taskLines[i].replaceFirst(RegExp(r'^[0-9\-\*\.]+\s*'), '')}',
+        );
+      }
+    } else {
+      buffer.writeln('### Requirement 1 — Core Implementation');
+      buffer.writeln('- ${taskLines.first}');
+      buffer.writeln('### Requirement 2 — Integration & Error Handling');
+      buffer.writeln(
+        '- Connect feature to existing workflows and provide graceful error recovery.',
+      );
+    }
+    buffer.writeln();
+
+    buffer.writeln('## 4. Relevant Files to Inspect or Modify');
+    if (relevantFiles.isNotEmpty) {
+      relevantFiles.forEach((path, desc) {
+        buffer.writeln('- `$path` — $desc');
+      });
+    } else {
+      buffer.writeln('- Files to identify during repository inspection.');
+    }
+    buffer.writeln();
+
+    buffer.writeln('## 5. Dependencies and Technologies');
+    if (technologies.isNotEmpty) {
+      buffer.writeln('**Existing Technologies:**');
+      for (final t in technologies.take(8)) {
+        buffer.writeln('- $t');
+      }
+    }
+    if (dependencies.isNotEmpty) {
+      buffer.writeln('\n**Existing Dependencies:**');
+      for (final d in dependencies.take(10)) {
+        buffer.writeln('- $d');
+      }
+    }
+    buffer.writeln('\n- Reuse existing dependencies and architecture wherever possible.');
+    buffer.writeln('- Introduce new dependencies only if strictly required and justified.');
+    buffer.writeln();
+
+    buffer.writeln('## 6. Implementation Instructions');
+    buffer.writeln('1. Inspect the relevant files and existing architecture before writing code.');
+    buffer.writeln('2. Implement the required changes cleanly in accordance with existing code style and patterns.');
+    buffer.writeln('3. Incorporate comprehensive validation and robust error handling.');
+    buffer.writeln('4. Verify that existing workflows and APIs remain backwards compatible.');
+    buffer.writeln('5. Run existing automated tests and static analysis to confirm zero regressions.');
+    buffer.writeln();
+
+    buffer.writeln('## 7. Environment and Configuration Constraints');
+    buffer.writeln('- Preserve existing configuration files and runtime environment.');
+    buffer.writeln('- Never expose secrets, API keys, passwords, or tokens.');
+    buffer.writeln('- If new configuration variables are needed, document placeholders in environment templates.');
+    buffer.writeln();
+
+    buffer.writeln('## 8. Compatibility and Preservation Requirements');
+    buffer.writeln('- All existing features and behavior must remain functional.');
+    buffer.writeln('- Avoid unrelated refactoring, redesigns, or dependency upgrades.');
+    buffer.writeln('- Maintain backward compatibility with existing interfaces.');
+    buffer.writeln();
+
+    buffer.writeln('## 9. Acceptance Criteria');
+    buffer.writeln('1. The requested feature is fully implemented and functioning: "$featureTitle".');
+    buffer.writeln('2. Validation and error handling are present for all new inputs.');
+    buffer.writeln('3. All existing functionality continues to work without regression.');
+    buffer.writeln('4. No unrelated code files or dependencies are altered.');
+    buffer.writeln();
+
+    buffer.writeln('## 10. Verification');
+    buffer.writeln('- Execute relevant unit tests and static analysis checks.');
+    buffer.writeln('- Verify happy-path functionality and error recovery.');
+    buffer.writeln('- Distinguish completed checks from remaining release-time verification.');
+
+    return buffer.toString().trim();
+  }
+
+  String _buildLocalSummarySection(
+    String projectName,
+    Map<String, dynamic>? folderReport,
+  ) {
+    final buffer = StringBuffer();
+    buffer.writeln('### SECTION B — LOCAL PROJECT ANALYSIS SUMMARY — REFERENCE CONTEXT');
+    buffer.writeln();
+
+    if (folderReport == null || folderReport.isEmpty) {
+      buffer.writeln('Local project analysis was not provided or is unavailable.');
+      return buffer.toString().trim();
+    }
+
+    final overview = folderReport['overview'] as String? ?? '';
+    final architecture = folderReport['architecture'] as String? ?? '';
+    final technologies =
+        (folderReport['technologies'] as List?)?.whereType<Map>().toList() ?? [];
+    final dependencies =
+        (folderReport['dependencies'] as List?)?.whereType<Map>().toList() ?? [];
+    final files =
+        (folderReport['files'] as List?)?.whereType<Map>().toList() ?? [];
+    final statistics = folderReport['statistics'] as Map?;
+
+    if (overview.isNotEmpty) {
+      buffer.writeln('**Local Project Overview:**');
+      buffer.writeln(overview);
+      buffer.writeln();
+    }
+
+    if (architecture.isNotEmpty) {
+      buffer.writeln('**Architecture:**');
+      buffer.writeln(architecture);
+      buffer.writeln();
+    }
+
+    if (technologies.isNotEmpty) {
+      buffer.writeln('**Identified Technologies:**');
+      for (final t in technologies.take(10)) {
+        buffer.writeln(
+          '- ${t['name'] ?? ''}${t['category'] != null ? ' (${t['category']})' : ''}',
+        );
+      }
+      buffer.writeln();
+    }
+
+    if (dependencies.isNotEmpty) {
+      buffer.writeln('**Dependencies & Configuration Requirements:**');
+      for (final d in dependencies.take(15)) {
+        buffer.writeln(
+          '- ${d['name']} ${d['version'] ?? ''} ${d['purpose'] != null ? '— ${d['purpose']}' : ''}'
+              .trim(),
+        );
+      }
+      buffer.writeln();
+    }
+
+    if (files.isNotEmpty) {
+      buffer.writeln(
+        '**Local Project Structure & Important Files (${files.length} indexed):**',
+      );
+      for (final f in files.take(30)) {
+        final path = f['path'] ?? '';
+        final purpose = f['purpose'] ?? f['module'] ?? '';
+        buffer.writeln('- `$path` — $purpose');
+      }
+      if (files.length > 30) {
+        buffer.writeln('... and ${files.length - 30} more source files.');
+      }
+      buffer.writeln();
+    }
+
+    if (statistics != null) {
+      buffer.writeln('**Scan Statistics:**');
+      buffer.writeln('- Discovered files: ${statistics['discoveredFiles'] ?? 'N/A'}');
+      buffer.writeln('- Analyzed files: ${statistics['analyzedFiles'] ?? files.length}');
+      buffer.writeln('- Omitted files: ${statistics['omittedFiles'] ?? 0}');
+    }
+
+    return buffer.toString().trim();
+  }
+
+  String _buildRemoteSummarySection(Map<String, dynamic>? repositoryReport) {
+    final buffer = StringBuffer();
+    buffer.writeln('### SECTION C — GITHUB REPOSITORY ANALYSIS SUMMARY — REFERENCE CONTEXT');
+    buffer.writeln();
+
+    if (repositoryReport == null || repositoryReport.isEmpty) {
+      buffer.writeln('GitHub repository analysis was not provided or is unavailable.');
+      return buffer.toString().trim();
+    }
+
+    final overview = repositoryReport['overview'] as String? ?? '';
+    final architecture = repositoryReport['architecture'] as String? ?? '';
+    final technologies =
+        (repositoryReport['technologies'] as List?)?.whereType<Map>().toList() ?? [];
+    final dependencies =
+        (repositoryReport['dependencies'] as List?)?.whereType<Map>().toList() ?? [];
+    final files =
+        (repositoryReport['files'] as List?)?.whereType<Map>().toList() ?? [];
+    final recommendations =
+        (repositoryReport['recommendations'] as List?)?.whereType<String>().toList() ?? [];
+
+    if (overview.isNotEmpty) {
+      buffer.writeln('**Remote Repository Overview:**');
+      buffer.writeln(overview);
+      buffer.writeln();
+    }
+
+    if (architecture.isNotEmpty) {
+      buffer.writeln('**Architecture & Component Relationships:**');
+      buffer.writeln(architecture);
+      buffer.writeln();
+    }
+
+    if (technologies.isNotEmpty) {
+      buffer.writeln('**Technologies & Frameworks:**');
+      for (final t in technologies.take(10)) {
+        buffer.writeln(
+          '- ${t['name'] ?? ''}${t['category'] != null ? ' (${t['category']})' : ''}',
+        );
+      }
+      buffer.writeln();
+    }
+
+    if (dependencies.isNotEmpty) {
+      buffer.writeln('**Dependencies & Configuration Details:**');
+      for (final d in dependencies.take(15)) {
+        buffer.writeln(
+          '- ${d['name']} ${d['version'] ?? ''} ${d['purpose'] != null ? '— ${d['purpose']}' : ''}'
+              .trim(),
+        );
+      }
+      buffer.writeln();
+    }
+
+    if (files.isNotEmpty) {
+      buffer.writeln(
+        '**Remote Repository Structure & Key Source Files (${files.length} indexed):**',
+      );
+      for (final f in files.take(30)) {
+        final path = f['path'] ?? '';
+        final purpose = f['purpose'] ?? f['module'] ?? '';
+        buffer.writeln('- `$path` — $purpose');
+      }
+      if (files.length > 30) {
+        buffer.writeln('... and ${files.length - 30} more source files.');
+      }
+      buffer.writeln();
+    }
+
+    if (recommendations.isNotEmpty) {
+      buffer.writeln('**Implementation Patterns & Integration Points:**');
+      for (final r in recommendations.take(6)) {
+        buffer.writeln('- $r');
+      }
+    }
+
+    return buffer.toString().trim();
+  }
+
+  String _assembleFinalResult({
+    required String sectionA,
+    required String sectionB,
+    required String sectionC,
+  }) {
+    // Clean up any stray section labels inside Section A if generated by AI
+    var cleanA = sectionA.trim();
+    if (cleanA.contains('### SECTION B — LOCAL PROJECT ANALYSIS SUMMARY')) {
+      cleanA =
+          cleanA.split('### SECTION B — LOCAL PROJECT ANALYSIS SUMMARY').first.trim();
+    }
+    if (cleanA.contains('### SECTION C — GITHUB REPOSITORY ANALYSIS SUMMARY')) {
+      cleanA =
+          cleanA.split('### SECTION C — GITHUB REPOSITORY ANALYSIS SUMMARY').first.trim();
+    }
+
+    final sectionAPrefix =
+        cleanA.startsWith('### SECTION A — NNSD IMPLEMENTATION PROMPT')
+            ? ''
+            : '### SECTION A — NNSD IMPLEMENTATION PROMPT\n\n';
+
+    final result = StringBuffer();
+    result.writeln('$sectionAPrefix$cleanA');
+    result.writeln();
+    result.writeln(sectionB);
+    result.writeln();
+    result.writeln(sectionC);
+
+    return RepositoryScanner.redactSecrets(result.toString().trim());
   }
 
   Map<String, dynamic> _readReport(dynamic data) {

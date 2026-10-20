@@ -682,9 +682,24 @@ class _ContextForgeShellState extends State<ContextForgeShell> {
   Widget _home() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      const _Heading(
-        'Home',
-        'Welcome back — here’s what your companion can do.',
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.asset(
+              'assets/images/app_logo.png',
+              width: 42,
+              height: 42,
+              fit: BoxFit.contain,
+            ),
+          ),
+          const SizedBox(width: 14),
+          const _Heading(
+            'ContextForge',
+            'Welcome back — here’s what your companion can do.',
+          ),
+        ],
       ),
       const SizedBox(height: 20),
       Wrap(
@@ -2244,23 +2259,26 @@ const _mascots = [
   (
     name: 'Momo',
     tagline: 'Creative · prompt improvement',
-    description: 'Friendly purple robot that polishes your prompts.',
+    description: 'Friendly purple robot with a headset that polishes your prompts.',
     emoji: '🤖',
+    image: 'assets/images/mascot_momo.png',
     color: Color(0xFFAA79E9),
   ),
   (
     name: 'Byte',
     tagline: 'Code-aware · repository context',
     description:
-        'A small blue companion with glowing eyes that reads your repo.',
+        'A blue companion with a laptop that reads and inspects your codebase.',
     emoji: '👾',
+    image: 'assets/images/mascot_byte.png',
     color: Color(0xFF55A8EC),
   ),
   (
     name: 'Pixel',
     tagline: 'Concise · token efficiency',
-    description: 'A playful mint creature that keeps prompts short and clear.',
+    description: 'A focused mint creature with a checklist that ensures code quality.',
     emoji: '🐸',
+    image: 'assets/images/mascot_pixel.png',
     color: Color(0xFF60CCAE),
   ),
 ];
@@ -2296,14 +2314,25 @@ class _Sidebar extends StatelessWidget {
         children: [
           Row(
             children: [
-              const _Mascot(size: 36, index: 0),
-              const SizedBox(width: 9),
-              const Text(
-                'Moscowt',
-                style: TextStyle(
-                  fontSize: 19,
-                  fontWeight: FontWeight.w700,
-                  color: ink,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.asset(
+                  'assets/images/app_logo.png',
+                  width: 32,
+                  height: 32,
+                  fit: BoxFit.contain,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'ContextForge',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: ink,
+                  ),
                 ),
               ),
             ],
@@ -2780,7 +2809,7 @@ class _Mascot extends StatelessWidget {
   final int index;
   @override
   Widget build(BuildContext context) {
-    final mascot = _mascots[index];
+    final mascot = _mascots[index.clamp(0, _mascots.length - 1)];
     return Container(
       width: size,
       height: size,
@@ -2789,7 +2818,19 @@ class _Mascot extends StatelessWidget {
         color: mascot.color.withValues(alpha: .16),
         shape: BoxShape.circle,
       ),
-      child: Text(mascot.emoji, style: TextStyle(fontSize: size * .62)),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(size / 2),
+        child: Image.asset(
+          mascot.image,
+          width: size * .84,
+          height: size * .84,
+          fit: BoxFit.contain,
+          errorBuilder: (_, _, _) => Text(
+            mascot.emoji,
+            style: TextStyle(fontSize: size * .62),
+          ),
+        ),
+      ),
     );
   }
 }

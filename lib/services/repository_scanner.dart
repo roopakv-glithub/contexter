@@ -125,7 +125,7 @@ class RepositoryScanner {
     'venv',
   };
 
-  static String _redactSecrets(String content) => content
+  static String redactSecrets(String content) => content
       .replaceAll(
         RegExp(
           r'-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----',
@@ -151,6 +151,8 @@ class RepositoryScanner {
         ),
         r'$1[REDACTED]',
       );
+
+  static String _redactSecrets(String content) => redactSecrets(content);
 
   static bool _isAllowed(String path) {
     final normalized = path.replaceAll('\\', '/');
